@@ -1,0 +1,6 @@
+node_modules
+dist
+coverage
+.changeset
+pnpm-lock.yaml
+docs/api
