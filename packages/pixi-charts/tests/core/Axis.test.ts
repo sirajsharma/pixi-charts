@@ -81,6 +81,7 @@ vi.mock('pixi.js', () => {
 import { Container, Graphics, Text } from 'pixi.js';
 
 import { Axis } from '../../src/core/Axis.js';
+import { bandAdapter, linearAdapter, timeAdapter } from '../../src/core/ScaleAdapter.js';
 
 type MockContainerStatic = {
   instances: { children: unknown[]; destroyed: boolean; destroy: ReturnType<typeof vi.fn> }[];
@@ -118,7 +119,7 @@ beforeEach(() => {
 describe('Axis — construction with a linear scale', () => {
   it('creates one Container and the expected child count', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
-    new Axis({ scale, orientation: 'bottom', length: 200 });
+    new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 200 });
 
     expect(MockContainer.instances).toHaveLength(1);
     const container = MockContainer.instances[0]!;
@@ -130,7 +131,7 @@ describe('Axis — construction with a linear scale', () => {
 
   it('respects tickCount approximately (d3 picks nice numbers)', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 500]);
-    new Axis({ scale, orientation: 'bottom', length: 500, tickCount: 10 });
+    new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 500, tickCount: 10 });
 
     expect(MockText.instances.length).toBeGreaterThanOrEqual(8);
     expect(MockText.instances.length).toBeLessThanOrEqual(12);
@@ -140,7 +141,7 @@ describe('Axis — construction with a linear scale', () => {
 describe('Axis — construction with a band scale', () => {
   it('produces exactly one tick per domain entry', () => {
     const scale = scaleBand().domain(['a', 'b', 'c', 'd']).range([0, 400]);
-    new Axis({ scale, orientation: 'bottom', length: 400 });
+    new Axis({ scale: bandAdapter(scale), orientation: 'bottom', length: 400 });
 
     expect(MockText.instances).toHaveLength(4);
     expect(MockText.instances.map((t) => t.text)).toEqual(['a', 'b', 'c', 'd']);
@@ -152,7 +153,7 @@ describe('Axis — construction with a time scale', () => {
     const scale = scaleTime()
       .domain([new Date(2020, 0, 1), new Date(2020, 11, 31)])
       .range([0, 300]);
-    new Axis({ scale, orientation: 'bottom', length: 300 });
+    new Axis({ scale: timeAdapter(scale), orientation: 'bottom', length: 300 });
 
     expect(MockText.instances.length).toBeGreaterThan(0);
     for (const t of MockText.instances) {
@@ -165,7 +166,7 @@ describe('Axis — construction with a time scale', () => {
 describe('Axis — construction with a log scale', () => {
   it('builds with major-tick labels only', () => {
     const scale = scaleLog().domain([1, 1000]).range([0, 300]);
-    new Axis({ scale, orientation: 'left', length: 300 });
+    new Axis({ scale: linearAdapter(scale), orientation: 'left', length: 300 });
 
     expect(MockText.instances.length).toBeGreaterThan(0);
   });
@@ -175,7 +176,7 @@ describe('Axis — custom tickFormat', () => {
   it('overrides d3 default formatting for every label', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
     new Axis({
-      scale,
+      scale: linearAdapter(scale),
       orientation: 'bottom',
       length: 200,
       tickFormat: (v) => `$${String(v)}`,
@@ -191,7 +192,7 @@ describe('Axis — custom tickFormat', () => {
 describe('Axis — orientations', () => {
   it('bottom: labels anchored centered-top, positioned below axis line', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
-    new Axis({ scale, orientation: 'bottom', length: 200 });
+    new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 200 });
 
     expect(MockText.instances.length).toBeGreaterThan(0);
     for (const t of MockText.instances) {
@@ -203,7 +204,7 @@ describe('Axis — orientations', () => {
 
   it('top: labels anchored centered-bottom, positioned above axis line', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
-    new Axis({ scale, orientation: 'top', length: 200 });
+    new Axis({ scale: linearAdapter(scale), orientation: 'top', length: 200 });
 
     for (const t of MockText.instances) {
       expect(t.anchor.set).toHaveBeenCalledWith(0.5, 1);
@@ -214,7 +215,7 @@ describe('Axis — orientations', () => {
 
   it('left: labels anchored right-middle, positioned left of axis line', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
-    new Axis({ scale, orientation: 'left', length: 200 });
+    new Axis({ scale: linearAdapter(scale), orientation: 'left', length: 200 });
 
     for (const t of MockText.instances) {
       expect(t.anchor.set).toHaveBeenCalledWith(1, 0.5);
@@ -225,7 +226,7 @@ describe('Axis — orientations', () => {
 
   it('right: labels anchored left-middle, positioned right of axis line', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
-    new Axis({ scale, orientation: 'right', length: 200 });
+    new Axis({ scale: linearAdapter(scale), orientation: 'right', length: 200 });
 
     for (const t of MockText.instances) {
       expect(t.anchor.set).toHaveBeenCalledWith(0, 0.5);
@@ -239,7 +240,7 @@ describe('Axis — gridlines', () => {
   it('adds N gridline Graphics when showGrid is true', () => {
     const scale = scaleBand().domain(['a', 'b', 'c']).range([0, 300]);
     new Axis({
-      scale,
+      scale: bandAdapter(scale),
       orientation: 'bottom',
       length: 300,
       showGrid: true,
@@ -260,7 +261,7 @@ describe('Axis — gridlines', () => {
 
   it('does NOT add gridline graphics when showGrid is false (default)', () => {
     const scale = scaleBand().domain(['a', 'b', 'c']).range([0, 300]);
-    new Axis({ scale, orientation: 'bottom', length: 300 });
+    new Axis({ scale: bandAdapter(scale), orientation: 'bottom', length: 300 });
 
     const container = MockContainer.instances[0]!;
     // 1 axis line + 3 tick marks + 3 labels = 7 children.
@@ -270,7 +271,12 @@ describe('Axis — gridlines', () => {
   it('throws if showGrid is true but gridLength is missing', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
     expect(() => {
-      new Axis({ scale, orientation: 'bottom', length: 200, showGrid: true });
+      new Axis({
+        scale: linearAdapter(scale),
+        orientation: 'bottom',
+        length: 200,
+        showGrid: true,
+      });
     }).toThrow(/gridLength must be a positive number/);
   });
 });
@@ -278,14 +284,14 @@ describe('Axis — gridlines', () => {
 describe('Axis — update()', () => {
   it('destroys old children and rebuilds', () => {
     const scale = scaleBand().domain(['a', 'b']).range([0, 200]);
-    const axis = new Axis({ scale, orientation: 'bottom', length: 200 });
+    const axis = new Axis({ scale: bandAdapter(scale), orientation: 'bottom', length: 200 });
 
     const oldChildrenCount = MockGraphics.instances.length + MockText.instances.length;
     const oldGraphics = [...MockGraphics.instances];
     const oldTexts = [...MockText.instances];
 
     const newScale = scaleBand().domain(['x', 'y', 'z', 'w']).range([0, 200]);
-    axis.update({ scale: newScale });
+    axis.update({ scale: bandAdapter(newScale) });
 
     // Every prior child should be destroyed.
     for (const g of oldGraphics) expect(g.destroyed).toBe(true);
@@ -307,7 +313,7 @@ describe('Axis — update()', () => {
 describe('Axis — destroy()', () => {
   it('destroys all children and the container, marks destroyed', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
-    const axis = new Axis({ scale, orientation: 'bottom', length: 200 });
+    const axis = new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 200 });
 
     const container = MockContainer.instances[0]!;
     const allGraphics = [...MockGraphics.instances];
@@ -324,7 +330,7 @@ describe('Axis — destroy()', () => {
 
   it('is idempotent', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
-    const axis = new Axis({ scale, orientation: 'bottom', length: 200 });
+    const axis = new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 200 });
     const container = MockContainer.instances[0]!;
 
     axis.destroy();
@@ -335,11 +341,35 @@ describe('Axis — destroy()', () => {
 
   it('throws when update() is called after destroy()', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
-    const axis = new Axis({ scale, orientation: 'bottom', length: 200 });
+    const axis = new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 200 });
     axis.destroy();
 
     expect(() => {
       axis.update({ length: 300 });
     }).toThrow(/cannot update\(\) after destroy/);
+  });
+});
+
+describe('Axis — generic over scale domain', () => {
+  // This test exists as much for human readers as for the test suite: it
+  // demonstrates that `Axis<Date>` flows the domain type through to the
+  // `tickFormat` callback, so `(d) => d.getFullYear()` compiles cleanly
+  // with no `as Date` cast and no discriminated-union narrowing.
+  it('Axis<Date> with timeAdapter accepts a (d: Date) => string formatter without narrowing', () => {
+    const scale = scaleTime()
+      .domain([new Date(2020, 0, 1), new Date(2024, 0, 1)])
+      .range([0, 400]);
+
+    new Axis({
+      scale: timeAdapter(scale),
+      orientation: 'bottom',
+      length: 400,
+      tickFormat: (d) => d.getFullYear().toString(),
+    });
+
+    expect(MockText.instances.length).toBeGreaterThan(0);
+    for (const t of MockText.instances) {
+      expect(t.text).toMatch(/^\d{4}$/);
+    }
   });
 });

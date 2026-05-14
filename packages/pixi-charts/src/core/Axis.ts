@@ -1,44 +1,30 @@
-import type { ScaleBand, ScaleLinear, ScaleLogarithmic, ScaleTime } from 'd3-scale';
 import { Container, Graphics, Text } from 'pixi.js';
 
-/**
- * Scales an {@link Axis} can render. Linear / time / log share a `ticks()` +
- * `tickFormat()` shape; band is handled separately because its "ticks" are
- * the domain entries themselves.
- */
-export type AxisScale =
-  | ScaleLinear<number, number>
-  | ScaleBand<string>
-  | ScaleTime<number, number>
-  | ScaleLogarithmic<number, number>;
+import type { ScaleAdapter } from './ScaleAdapter.js';
 
 /** Edge of the plot area an axis sits on. */
 export type AxisOrientation = 'top' | 'right' | 'bottom' | 'left';
 
 /**
- * Custom label formatter. The union covers every domain value type that
- * {@link AxisScale} can produce.
- *
- * The session-2 spec drafted this as `(value: never) => string`, but `never`
- * is uncallable — the union below is what the formatter actually needs to
- * accept.
- */
-export type AxisTickFormatter = (value: number | string | Date) => string;
-
-/**
  * Constructor options for {@link Axis}.
+ *
+ * The generic parameter `TDomain` is the domain element type of the
+ * underlying scale (e.g. `number` for linear, `string` for band, `Date`
+ * for time). It flows through to {@link AxisOptions.tickFormat}, so
+ * formatter callbacks receive correctly typed values without any
+ * narrowing at the call site.
  */
-export interface AxisOptions {
-  /** The d3 scale that maps domain values to the axis's pixel range. */
-  scale: AxisScale;
+export interface AxisOptions<TDomain> {
+  /** The scale adapter that maps domain values to the axis's pixel range. */
+  scale: ScaleAdapter<TDomain>;
   /** Which edge of the plot this axis sits on. */
   orientation: AxisOrientation;
   /** Pixel length of the axis line. */
   length: number;
   /** Approximate tick count hint for continuous scales. Default `5`. Ignored for band scales. */
   tickCount?: number;
-  /** Override the default formatter produced by `scale.tickFormat()`. */
-  tickFormat?: AxisTickFormatter;
+  /** Override the default formatter produced by the adapter's `tickFormat()`. */
+  tickFormat?: (value: TDomain) => string;
   /** Render perpendicular gridlines extending `gridLength` into the plot area. */
   showGrid?: boolean;
   /** Length of gridlines into the plot area. Required when `showGrid` is `true`. */
@@ -67,62 +53,23 @@ const DEFAULT_GRID_COLOR = 0xeeeeee;
 const DEFAULT_FONT_SIZE = 11;
 const DEFAULT_FONT_FAMILY = 'sans-serif';
 
-/**
- * Discriminates band scales from continuous scales via a structural check on
- * `.bandwidth`. Avoids `'ticks' in scale`-style duck typing, which would
- * silently break if d3 added the method to a base type.
- *
- * @internal
- */
-function isBandScale(scale: AxisScale): scale is ScaleBand<string> {
-  return typeof (scale as { bandwidth?: unknown }).bandwidth === 'function';
-}
-
-interface TickData {
-  values: readonly (number | string | Date)[];
+interface TickData<TDomain> {
+  values: readonly TDomain[];
   positions: readonly number[];
-  format: AxisTickFormatter;
+  format: (value: TDomain) => string;
 }
 
-/**
- * Project the three continuous scale types (linear/time/log) onto a single
- * callable shape. Each one independently satisfies this shape — we use the
- * projection to call `ticks()`, `tickFormat()`, and the scale itself
- * uniformly without an exhaustive `if`-ladder.
- *
- * @internal
- */
-interface ContinuousScale {
-  (v: number | Date): number;
-  ticks(count?: number): (number | Date)[];
-  tickFormat(count?: number): (v: number | Date) => string;
-}
-
-function computeTickData(
-  scale: AxisScale,
+function computeTickData<TDomain>(
+  scale: ScaleAdapter<TDomain>,
   tickCount: number,
-  customFormat: AxisTickFormatter | undefined,
-): TickData {
-  if (isBandScale(scale)) {
-    const domain = scale.domain();
-    const half = scale.bandwidth() / 2;
-    const positions = domain.map((d) => (scale(d) ?? 0) + half);
-    const format: AxisTickFormatter = customFormat ?? ((v): string => String(v));
-    return { values: domain, positions, format };
-  }
-
-  const c = scale as unknown as ContinuousScale;
-  const values = c.ticks(tickCount);
-  const positions = values.map((v) => c(v));
-  let format: AxisTickFormatter;
-  if (customFormat !== undefined) {
-    format = customFormat;
-  } else {
-    // Honour the spec: never call `scale.tickFormat()` if a custom formatter
-    // was provided.
-    const d3Format = c.tickFormat(tickCount);
-    format = (v): string => d3Format(v as number | Date);
-  }
+  customFormat: ((value: TDomain) => string) | undefined,
+): TickData<TDomain> {
+  const values = scale.ticks(tickCount);
+  // Honour the spec: never call `scale.tickFormat()` if a custom formatter
+  // was provided.
+  const format = customFormat ?? scale.tickFormat(tickCount);
+  const half = scale.kind === 'band' ? (scale.bandwidth?.() ?? 0) / 2 : 0;
+  const positions = values.map((v) => scale.scale(v) + half);
   return { values, positions, format };
 }
 
@@ -204,14 +151,14 @@ function geometryFor(
  * line and ticks without needing `sortableChildren` (which adds a per-frame
  * sort cost).
  */
-export class Axis {
+export class Axis<TDomain> {
   /** The PIXI container holding all axis children. Consumer adds this to its stage. */
   readonly container: Container;
 
-  private options: AxisOptions;
+  private options: AxisOptions<TDomain>;
   private _destroyed = false;
 
-  constructor(opts: AxisOptions) {
+  constructor(opts: AxisOptions<TDomain>) {
     this.options = opts;
     this.container = new Container();
     this.build();
@@ -227,7 +174,7 @@ export class Axis {
    *
    * @throws If called after {@link destroy}.
    */
-  update(opts: Partial<AxisOptions>): void {
+  update(opts: Partial<AxisOptions<TDomain>>): void {
     if (this._destroyed) {
       throw new Error('Axis: cannot update() after destroy()');
     }
