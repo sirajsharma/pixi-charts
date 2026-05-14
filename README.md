@@ -21,34 +21,41 @@ pnpm add pixi-charts pixi.js
 Every chart is described by the same `ChartSpec` JSON shape, and a single `render(spec, container)` call dispatches to the right implementation. This makes the API trivially consumable by LLMs that emit chart specifications.
 
 ```ts
-// API sketch — coming in a subsequent release.
 import { render } from 'pixi-charts';
 
-render(
+const chart = await render(
   {
     type: 'line',
     data: [
-      { x: 0, y: 10 },
-      { x: 1, y: 20 },
+      { date: '2024-01-01', revenue: 100 },
+      { date: '2024-02-01', revenue: 130 },
+      { date: '2024-03-01', revenue: 120 },
+      { date: '2024-04-01', revenue: 165 },
     ],
-    encoding: { x: 'x', y: 'y' },
+    encoding: {
+      x: { field: 'date', type: 'temporal' },
+      y: { field: 'revenue', type: 'quantitative' },
+    },
   },
   document.getElementById('chart')!,
 );
+
+// Later, when tearing down:
+chart.destroy();
 ```
 
-## Coming soon
+`render` returns a `Promise<Chart>` — it awaits PixiJS's async initialization and runs the first render, so the resolved chart is ready to interact with. Invalid specs throw a `ChartSpecValidationError` whose message includes the path, the received value, and a minimal example of the right shape.
 
-Six chart types are planned for v1:
+## Available chart types
 
-- [ ] Line
+- [x] **Line** — single- or multi-series, quantitative / categorical / temporal x-axis, hover tooltips, automatic LTTB downsampling above 10,000 points per series.
 - [ ] Area
 - [ ] Bar
 - [ ] Scatter
 - [ ] Heatmap
 - [ ] Pie / Donut
 
-This repository currently ships only the foundation: the `Chart` abstract base class and a ticker-based `tween()` animation helper. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the architectural principles every chart implementation will follow.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the architectural principles every chart implementation follows.
 
 ## Monorepo layout
 
