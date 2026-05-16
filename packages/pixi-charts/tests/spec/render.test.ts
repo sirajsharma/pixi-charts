@@ -26,6 +26,7 @@ vi.mock('pixi.js', () => {
     clear = vi.fn(() => this);
     moveTo = vi.fn(() => this);
     lineTo = vi.fn(() => this);
+    closePath = vi.fn(() => this);
     rect = vi.fn(() => this);
     fill = vi.fn(() => this);
     stroke = vi.fn(() => this);
@@ -73,6 +74,7 @@ vi.mock('pixi.js', () => {
   };
 });
 
+import { AreaChart } from '../../src/charts/AreaChart.js';
 import { LineChart } from '../../src/charts/LineChart.js';
 import type { ChartSpec } from '../../src/spec/ChartSpec.js';
 import { render } from '../../src/spec/render.js';
@@ -120,6 +122,15 @@ describe('render(spec, container)', () => {
     chart.destroy();
   });
 
+  it('returns a fully-rendered AreaChart instance for a valid area spec', async () => {
+    const container = makeContainer();
+    const chart = await render({ ...validLineSpec, type: 'area' }, container);
+    expect(chart).toBeInstanceOf(AreaChart);
+    expect(chart.initialized).toBe(true);
+    expect(chart.destroyed).toBe(false);
+    chart.destroy();
+  });
+
   it('propagates ChartSpecValidationError for invalid input', async () => {
     const container = makeContainer();
     const bad = { ...validLineSpec, data: [] };
@@ -132,6 +143,8 @@ describe('render(spec, container)', () => {
       ...validLineSpec,
       type: 'scatter',
     };
-    await expect(render(spec, container)).rejects.toThrow(/not implemented yet.*Available: line/);
+    await expect(render(spec, container)).rejects.toThrow(
+      /not implemented yet.*Available: line, area/,
+    );
   });
 });

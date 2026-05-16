@@ -52,6 +52,28 @@ describe('validateChartSpec — line-specific encoding requirements', () => {
   });
 });
 
+describe('validateChartSpec — area-specific encoding requirements', () => {
+  const validAreaSpec = { ...validLineSpec, type: 'area' as const };
+
+  it('passes for a valid area spec', () => {
+    const result = validateChartSpec(validAreaSpec);
+    expect(result.type).toBe('area');
+  });
+
+  it('throws when encoding.x is missing for an area chart', () => {
+    const spec = { ...validAreaSpec, encoding: { y: validAreaSpec.encoding.y } };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.x/);
+    expect(() => validateChartSpec(spec)).toThrow(/type: 'area'/);
+  });
+
+  it('throws when encoding.y is missing for an area chart', () => {
+    const spec = { ...validAreaSpec, encoding: { x: validAreaSpec.encoding.x } };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.y/);
+  });
+});
+
 describe('validateChartSpec — type/enum failures', () => {
   it('throws and lists allowed types when type is invalid', () => {
     const spec = { ...validLineSpec, type: 'bogus' };

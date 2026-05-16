@@ -28,23 +28,12 @@ import {
   type XValue,
 } from './_shared/cartesian.js';
 
-/**
- * Re-exported for backward compatibility. The canonical definitions live in
- * `charts/_shared/cartesian.ts`; LineChart's original public-ish names are
- * preserved so existing consumers and tests keep resolving unchanged.
- */
-export {
-  buildCartesianHitTester as createLineHitTester,
-  type CartesianSeries as Series,
-  type CartesianPoint as SeriesPoint,
-  type CartesianHit as Hit,
-  type XValue,
-} from './_shared/cartesian.js';
+/** Stroke width for the area's top edge outline. */
+const AREA_STROKE_WIDTH = 2;
+/** Fill opacity for the area body. Low enough that overlapping series stay readable. */
+const AREA_FILL_ALPHA = 0.4;
 
-/** Stroke width for plotted lines. */
-const LINE_STROKE_WIDTH = 2;
-
-export interface LineChartOptions {
+export interface AreaChartOptions {
   /** DOM element the chart canvas will be appended to. */
   container: HTMLElement;
   /** Parsed and validated spec. */
@@ -52,51 +41,43 @@ export interface LineChartOptions {
 }
 
 /**
- * Line chart — the first end-to-end chart in `pixi-charts`.
+ * Area chart — a filled region between each series' line and a zero
+ * baseline, with a stroked top edge.
  *
- * Composes the v1 primitive set: two {@link Axis} instances wrapped over
- * {@link ScaleAdapter} adapters, an optional {@link Legend} (for
- * categorical color encoding with multiple series), an optional
- * {@link Tooltip} attached to the container, and an
- * {@link InteractionLayer} fed a chart-specific hit-tester.
+ * Shares the entire data + scale layer with
+ * {@link import('./LineChart.js').LineChart} via
+ * `charts/_shared/cartesian.ts` (series grouping, downsampling, scale /
+ * adapter / axis construction, hit-testing, tooltip formatting). Both
+ * classes extend {@link Chart} directly — composition, not inheritance.
+ * Only the drawing differs: a closed polygon (`fill` + top-edge `stroke`)
+ * rather than a bare stroke.
  *
- * The data + scale layer (series grouping, downsampling, scale/adapter/axis
- * construction, hit-testing, tooltip formatting) is shared with
- * {@link import('./AreaChart.js').AreaChart} via plain functions in
- * `charts/_shared/cartesian.ts`. LineChart still extends {@link Chart}
- * directly — composition, not inheritance.
- *
- * **Lifecycle.** Extends {@link Chart}, so the public lifecycle is:
+ * **Lifecycle / resize / hit-testing** are identical to `LineChart`:
  *
  * ```ts
- * const chart = new LineChart({ container, spec });
+ * const chart = new AreaChart({ container, spec });
  * await chart.init();    // creates the PIXI app AND does the first render
- * // ...
  * chart.destroy();       // idempotent; cancels tweens, tears down primitives
  * ```
  *
- * Construction is pure — no PIXI app, no DOM mutations beyond the spec
- * being captured. The first render happens at the tail of `init()` so the
- * spec dispatcher can hand consumers a fully-rendered chart back.
+ * **Baseline.** The fill closes along `yAdapter.scale(0)` — zero projected
+ * through the y-adapter, *not* `plotHeight`. When the y-domain doesn't
+ * include zero it is anchored at the plot bottom; when it crosses zero the
+ * baseline sits mid-plot. The hit-tester is the shared cartesian one, so
+ * the tooltip reports the point on the top edge (areas are not expected to
+ * hit-test the filled body).
  *
- * **Resize.** Inherited `ResizeObserver` re-invokes the protected
- * {@link render} on container size changes; LineChart rebuilds its scales
- * and adapters with the new ranges and skips the enter animation on those
- * subsequent passes.
- *
- * **Hit-testing strategy.** Built using the {@link ScaleAdapter}'s `kind`
- * discriminator. Continuous adapters (linear, time) use `invert()` to map
- * the pointer's x back to the domain, then find the nearest datum within
- * {@link HIT_TEST_RADIUS_PX}. Band adapters iterate the domain to find the
- * band the pointer falls inside. Across multiple series, the closest point
- * in pixel space wins.
+ * **Known gap — stacking.** Multi-series areas are drawn in order and
+ * overlap, with {@link AREA_FILL_ALPHA} keeping overlaps readable. Stacked
+ * areas (cumulative baselines) are a future feature with their own design
+ * decisions and are intentionally not implemented here.
  */
-export class LineChart extends Chart {
+export class AreaChart extends Chart {
   private readonly spec: ChartSpec;
 
   private series: CartesianSeries[] = [];
   private plotContainer: Container | null = null;
-  private linesContainer: Container | null = null;
+  private areasContainer: Container | null = null;
   private xAxis: Axis<XValue> | null = null;
   private yAxis: Axis<number> | null = null;
   private xAdapter: ScaleAdapter<XValue> | null = null;
@@ -111,7 +92,7 @@ export class LineChart extends Chart {
   /** Tracks whether the downsampling notice has already been logged for this instance. */
   private loggedDownsample = false;
 
-  constructor(opts: LineChartOptions) {
+  constructor(opts: AreaChartOptions) {
     super({
       container: opts.container,
       width: resolveWidth(opts.spec, opts.container),
@@ -140,9 +121,6 @@ export class LineChart extends Chart {
   override destroy(): void {
     if (this.destroyed) return;
 
-    // The base destroy() flips `destroyed` and cancels tweens before we
-    // walk the owned primitives — `super.destroy()` first guarantees
-    // ordering even if a primitive throws on destroy.
     super.destroy();
 
     if (this.tooltip) {
@@ -170,19 +148,13 @@ export class LineChart extends Chart {
   /**
    * Full render pass. Called by {@link init} for the first frame, and by
    * the base class's resize observer on subsequent container resizes.
-   *
-   * The render is mostly idempotent: existing primitive instances are
-   * destroyed and rebuilt on each pass. A future optimization could diff
-   * scales and call `axis.update()` rather than reconstructing — for v1,
-   * the simpler shape wins.
+   * Existing primitives are destroyed and rebuilt on each pass.
    */
   protected override render(): void {
     if (this.destroyed || this.app === null) return;
 
     const stage = this.app.stage;
 
-    // Tear down any prior content. On a resize this can be the second
-    // pass; the first pass starts with all slots null.
     if (this.plotContainer !== null) {
       stage.removeChild(this.plotContainer);
       this.plotContainer.destroy({ children: true });
@@ -220,33 +192,24 @@ export class LineChart extends Chart {
 
     this.maybeLogDownsample();
 
-    // Plot container holds everything inside the margins; positioned once
-    // so axis / line / interaction-layer children live in plot-local
-    // coordinates (origin at the plot's top-left).
     const plotContainer = new Container();
     plotContainer.position.set(margin.left, margin.top);
     stage.addChild(plotContainer);
     this.plotContainer = plotContainer;
 
-    // Axes go on the plot container so their tick labels align with the
-    // plot edges. Y axis at x=0; X axis at y=plotHeight.
     plotContainer.addChild(this.yAxis.container);
     this.xAxis.container.position.set(0, plotHeight);
     plotContainer.addChild(this.xAxis.container);
 
-    // Lines container — separate from axes for easier z-order management.
-    const linesContainer = new Container();
-    plotContainer.addChild(linesContainer);
-    this.linesContainer = linesContainer;
+    // Areas container — separate from axes for easier z-order management.
+    const areasContainer = new Container();
+    plotContainer.addChild(areasContainer);
+    this.areasContainer = areasContainer;
 
-    this.drawLines();
+    this.drawAreas();
 
-    // Interaction + tooltip wiring. The tooltip is created lazily on the
-    // first render rather than reusing across renders, so its DOM stays
-    // clean if a resize redraws.
     this.setupInteractionAndTooltip();
 
-    // Legend in the plot-area top-right, if multi-series.
     this.maybeBuildLegend();
 
     this.didInitialRender = true;
@@ -254,16 +217,15 @@ export class LineChart extends Chart {
 
   /**
    * Emit the once-per-instance LTTB downsampling notice if any series was
-   * reduced. Kept in the chart class (not the shared module) so the
-   * notice fires exactly once per chart even across resizes — preserving
-   * the pre-refactor observable behavior.
+   * reduced. Kept in the chart class (not the shared module) so the notice
+   * fires exactly once per chart even across resizes.
    *
    * @internal
    */
   private maybeLogDownsample(): void {
     if (this.series.some((s) => s.downsampled) && !this.loggedDownsample) {
       console.info(
-        `LineChart: downsampled one or more series exceeding ${String(DOWNSAMPLE_THRESHOLD)} ` +
+        `AreaChart: downsampled one or more series exceeding ${String(DOWNSAMPLE_THRESHOLD)} ` +
           `points to ${String(DOWNSAMPLE_TARGET)} via LTTB.`,
       );
       this.loggedDownsample = true;
@@ -272,8 +234,8 @@ export class LineChart extends Chart {
 
   /**
    * Build a hit-tester from the chart's current adapters and series.
-   * Delegates to {@link buildCartesianHitTester} so the strategy can be
-   * unit-tested without standing up a real chart.
+   * Delegates to the shared {@link buildCartesianHitTester} — area charts
+   * hit-test the point on the top edge, exactly like a line chart.
    *
    * @internal
    */
@@ -285,18 +247,28 @@ export class LineChart extends Chart {
   }
 
   /**
-   * Draw each series as a stroked line. Honors `spec.animation.enter` —
-   * `false` skips the tween entirely, an object passes its `duration` /
-   * `ease` through to `tween()`.
+   * Draw each series as a filled polygon (top edge → down to the baseline
+   * → back along the baseline → closed) plus a stroked top-edge outline.
+   *
+   * The enter animation tweens `progress` 0 → 1 and rebuilds the polygon
+   * from the first `progress * points.length` points each frame — a
+   * left-to-right reveal. Honors `spec.animation.enter` (`false` skips the
+   * tween; an object passes `duration` / `ease` through) and reduced-motion
+   * via `tween()`. Resize passes draw the final state immediately.
    *
    * @internal
    */
-  private drawLines(): void {
-    if (this.linesContainer === null) return;
-    const linesContainer = this.linesContainer;
+  private drawAreas(): void {
+    if (this.areasContainer === null) return;
+    const areasContainer = this.areasContainer;
     const xAdapter = this.xAdapter;
     const yAdapter = this.yAdapter;
     if (xAdapter === null || yAdapter === null) return;
+
+    // Baseline is zero projected through the y-adapter — NOT plotHeight.
+    // For a y-domain that doesn't include zero this lands at the plot
+    // bottom; for one that crosses zero it sits mid-plot.
+    const baselineY = yAdapter.scale(0);
 
     const enter = this.spec.animation?.enter ?? true;
     const animate = enter !== false && !this.didInitialRender;
@@ -304,22 +276,38 @@ export class LineChart extends Chart {
 
     for (const series of this.series) {
       const graphics = new Graphics();
-      linesContainer.addChild(graphics);
+      areasContainer.addChild(graphics);
 
       const renderUpTo = (progress: number): void => {
         graphics.clear();
         const pts = series.points;
         if (pts.length === 0) return;
-        const count = Math.max(2, Math.floor(pts.length * progress));
+        const count = Math.min(pts.length, Math.max(2, Math.floor(pts.length * progress)));
         const first = pts[0];
-        if (first === undefined) return;
+        const last = pts[count - 1];
+        if (first === undefined || last === undefined) return;
+
+        // Filled polygon: top edge, down to the baseline at the last x,
+        // back along the baseline to the first x, closed.
         graphics.moveTo(xAdapter.scale(first.xRaw), yAdapter.scale(first.y));
-        for (let i = 1; i < Math.min(count, pts.length); i += 1) {
+        for (let i = 1; i < count; i += 1) {
           const p = pts[i];
           if (p === undefined) continue;
           graphics.lineTo(xAdapter.scale(p.xRaw), yAdapter.scale(p.y));
         }
-        graphics.stroke({ color: series.color, width: LINE_STROKE_WIDTH, alpha: 1 });
+        graphics.lineTo(xAdapter.scale(last.xRaw), baselineY);
+        graphics.lineTo(xAdapter.scale(first.xRaw), baselineY);
+        graphics.closePath();
+        graphics.fill({ color: series.color, alpha: AREA_FILL_ALPHA });
+
+        // Stroked top edge on top of the fill — reads better than fill alone.
+        graphics.moveTo(xAdapter.scale(first.xRaw), yAdapter.scale(first.y));
+        for (let i = 1; i < count; i += 1) {
+          const p = pts[i];
+          if (p === undefined) continue;
+          graphics.lineTo(xAdapter.scale(p.xRaw), yAdapter.scale(p.y));
+        }
+        graphics.stroke({ color: series.color, width: AREA_STROKE_WIDTH, alpha: 1 });
       };
 
       if (!animate || this.app === null) {
@@ -327,9 +315,6 @@ export class LineChart extends Chart {
         continue;
       }
 
-      // Build options without spreading `undefined` keys — TweenOptions
-      // uses `exactOptionalPropertyTypes`, which rejects explicit
-      // `key: undefined`.
       const tweenOpts: Parameters<typeof tween>[1] = { onUpdate: renderUpTo };
       if (enterOptions.duration !== undefined) tweenOpts.duration = enterOptions.duration;
       if (enterOptions.ease !== undefined) tweenOpts.ease = enterOptions.ease;
@@ -344,9 +329,6 @@ export class LineChart extends Chart {
 
     const showTooltip = this.spec.options?.showTooltip !== false;
 
-    // Tear down a prior interaction layer (resize path). The tooltip is
-    // kept across resizes — its DOM survives untouched, only the hit-test
-    // wiring needs rebuilding.
     if (this.interactionLayer) {
       this.interactionLayer.destroy();
       this.interactionLayer = null;
@@ -407,7 +389,6 @@ export class LineChart extends Chart {
       orientation: 'vertical',
       items: this.series.map((s) => ({ label: s.name, color: s.color })),
     });
-    // Position in the plot-area top-right, padded slightly from the edge.
     const padding = 8;
     const x = Math.max(0, this.plotWidth - legend.width - padding);
     const y = padding;

@@ -49,7 +49,7 @@ chart.destroy();
 ## Available chart types
 
 - [x] **Line** — single- or multi-series, quantitative / categorical / temporal x-axis, hover tooltips, automatic LTTB downsampling above 10,000 points per series.
-- [ ] Area
+- [x] **Area** — single- or multi-series filled area with a stroked top edge; same series composition, downsampling, and interaction as Line. Baseline projects zero through the y-scale (handles domains that don't include or that cross zero). Stacking not yet supported.
 - [ ] Bar
 - [ ] Scatter
 - [ ] Heatmap

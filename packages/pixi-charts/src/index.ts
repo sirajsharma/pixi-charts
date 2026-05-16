@@ -25,3 +25,4 @@ export type {
 // --- Imperative API (escape hatch for advanced consumers) ---
 export { Chart } from './core/Chart.js';
 export { LineChart } from './charts/LineChart.js';
+export { AreaChart } from './charts/AreaChart.js';

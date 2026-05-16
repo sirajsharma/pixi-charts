@@ -187,6 +187,23 @@ const KNOWN_SPEC_KEYS = new Set(['type', 'data', 'encoding', 'options', 'animati
  * emitted instead. This protects consumers writing forward-compat code
  * (e.g. setting a future `theme:` field) without locking the spec.
  */
+/**
+ * Cartesian line-family encoding rule: `x` and `y` are both required. Used
+ * for `'line'` and `'area'` (and any future cartesian type) so the teaching
+ * message stays identical and the check isn't copy-pasted per type.
+ */
+function requireXAndY(spec: ChartSpec, type: 'line' | 'area'): void {
+  const missing: string[] = [];
+  if (spec.encoding.x === undefined) missing.push('encoding.x');
+  if (spec.encoding.y === undefined) missing.push('encoding.y');
+  if (missing.length > 0) {
+    throw new ChartSpecValidationError(
+      `ChartSpec(type: '${type}') requires ${missing.join(' and ')}. Example: ` +
+        `{ x: { field: 'date', type: 'temporal' }, y: { field: 'revenue', type: 'quantitative' } }.`,
+    );
+  }
+}
+
 export function validateChartSpec(input: unknown): ChartSpec {
   const parsed = chartSpecSchema.safeParse(input);
   if (!parsed.success) {
@@ -219,17 +236,8 @@ export function validateChartSpec(input: unknown): ChartSpec {
     }
   }
 
-  if (spec.type === 'line') {
-    const missing: string[] = [];
-    if (spec.encoding.x === undefined) missing.push('encoding.x');
-    if (spec.encoding.y === undefined) missing.push('encoding.y');
-    if (missing.length > 0) {
-      throw new ChartSpecValidationError(
-        `ChartSpec(type: 'line') requires ${missing.join(' and ')}. Example: ` +
-          `{ x: { field: 'date', type: 'temporal' }, y: { field: 'revenue', type: 'quantitative' } }.`,
-      );
-    }
-  }
+  if (spec.type === 'line') requireXAndY(spec, 'line');
+  if (spec.type === 'area') requireXAndY(spec, 'area');
 
   // Field existence check. We sample the first row only — the spec
   // contract is that data is row-uniform, and walking every row is
