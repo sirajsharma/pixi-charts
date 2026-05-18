@@ -18,6 +18,7 @@ export class ChartSpecValidationError extends Error {
 const fieldTypeSchema = z.enum(['quantitative', 'categorical', 'temporal']);
 const chartTypeSchema = z.enum(['line', 'area', 'bar', 'scatter', 'heatmap', 'pie']);
 const easingSchema = z.enum(['linear', 'easeOut', 'easeInOut']);
+const orientationSchema = z.enum(['vertical', 'horizontal']);
 
 const encodingFieldSchema = z.object({
   field: z.string(),
@@ -60,6 +61,7 @@ const chartOptionsSchema = z.object({
   width: z.number().optional(),
   height: z.number().optional(),
   margin: marginSchema.optional(),
+  orientation: orientationSchema.optional(),
 });
 
 /**
@@ -95,6 +97,7 @@ const examples: Record<string, string> = {
   'encoding.y.field': '{ field: "revenue", type: "quantitative" }',
   'encoding.color': '{ field: "category", scheme: "category10" }',
   'animation.enter': '{ duration: 600, ease: "easeOut" }',
+  'options.orientation': '"vertical" | "horizontal"',
 };
 
 function pathToDotted(path: readonly (string | number)[]): string {
@@ -177,7 +180,15 @@ const KNOWN_SPEC_KEYS = new Set(['type', 'data', 'encoding', 'options', 'animati
  * - `data` must be non-empty (a zero-row chart is almost always a bug).
  * - Every `field` referenced by `encoding` must exist in the first data
  *   row's keys. Catches typos like `'revenu'` for `'revenue'`.
- * - For `type: 'line'`, both `encoding.x` and `encoding.y` are required.
+ * - For `type: 'line'` and `type: 'area'`, both `encoding.x` and
+ *   `encoding.y` are required.
+ * - For `type: 'bar'`, the category/value axis roles depend on
+ *   `options.orientation` — see {@link requireBarEncoding}.
+ *
+ * `options.orientation` is validated for its *shape* (one of `'vertical'` /
+ * `'horizontal'`) for every spec, but its *meaning* is read only for
+ * `type: 'bar'`. Line, area, and other types that set it are neither warned
+ * nor errored — the field is deliberately on the shared `ChartOptions`.
  *
  * Other chart types' encoding rules will be added alongside their
  * implementations; today they pass shape validation but throw at the
@@ -202,6 +213,54 @@ function requireXAndY(spec: ChartSpec, type: 'line' | 'area'): void {
         `{ x: { field: 'date', type: 'temporal' }, y: { field: 'revenue', type: 'quantitative' } }.`,
     );
   }
+}
+
+/**
+ * Bar-chart encoding rule. Which axis carries the categories and which
+ * carries the quantitative values depends on `options.orientation`
+ * (default `'vertical'`):
+ *
+ * - **vertical** (default): `encoding.x` is the category axis (must be
+ *   `type: 'categorical'`); `encoding.y` is the value axis (must be
+ *   `type: 'quantitative'`).
+ * - **horizontal**: roles swap — `encoding.y` is categorical, `encoding.x`
+ *   is quantitative.
+ *
+ * Each failure throws a teaching {@link ChartSpecValidationError} naming the
+ * exact path, the required type, and what was received. `orientation` is
+ * read **only here** (and only for `type: 'bar'`); the schema has already
+ * proven it is one of the two allowed values when present.
+ */
+function requireBarEncoding(spec: ChartSpec): void {
+  const orientation = spec.options?.orientation ?? 'vertical';
+  const categoryChannel = orientation === 'horizontal' ? 'y' : 'x';
+  const valueChannel = orientation === 'horizontal' ? 'x' : 'y';
+  const adjective = orientation === 'horizontal' ? 'horizontal' : 'vertical';
+
+  const requireChannel = (
+    channel: 'x' | 'y',
+    expectedType: 'categorical' | 'quantitative',
+  ): void => {
+    const enc = spec.encoding[channel];
+    if (enc === undefined) {
+      throw new ChartSpecValidationError(
+        `ChartSpec(type: 'bar') with ${adjective} orientation requires ` +
+          `\`encoding.${channel}\` (the ${
+            expectedType === 'categorical' ? 'category' : 'value'
+          } axis). Example: { x: { field: 'name', type: 'categorical' }, ` +
+          `y: { field: 'count', type: 'quantitative' } }.`,
+      );
+    }
+    if (enc.type !== expectedType) {
+      throw new ChartSpecValidationError(
+        `For ${adjective} bar charts, \`encoding.${channel}.type\` must be ` +
+          `\`'${expectedType}'\`. Received: \`'${enc.type}'\`.`,
+      );
+    }
+  };
+
+  requireChannel(categoryChannel, 'categorical');
+  requireChannel(valueChannel, 'quantitative');
 }
 
 export function validateChartSpec(input: unknown): ChartSpec {
@@ -238,6 +297,7 @@ export function validateChartSpec(input: unknown): ChartSpec {
 
   if (spec.type === 'line') requireXAndY(spec, 'line');
   if (spec.type === 'area') requireXAndY(spec, 'area');
+  if (spec.type === 'bar') requireBarEncoding(spec);
 
   // Field existence check. We sample the first row only — the spec
   // contract is that data is row-uniform, and walking every row is

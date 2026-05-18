@@ -50,7 +50,7 @@ chart.destroy();
 
 - [x] **Line** — single- or multi-series, quantitative / categorical / temporal x-axis, hover tooltips, automatic LTTB downsampling above 10,000 points per series.
 - [x] **Area** — single- or multi-series filled area with a stroked top edge; same series composition, downsampling, and interaction as Line. Baseline projects zero through the y-scale (handles domains that don't include or that cross zero). Stacking not yet supported.
-- [ ] Bar
+- [x] **Bar** — single series, vertical or horizontal (`options.orientation`). Per-bar color via a categorical color encoding (color by the category field for one color per bar). Baseline projects zero through the value scale, so negative values and domains that don't include zero render correctly. Grouped / stacked (multi-series) bars not yet supported.
 - [ ] Scatter
 - [ ] Heatmap
 - [ ] Pie / Donut

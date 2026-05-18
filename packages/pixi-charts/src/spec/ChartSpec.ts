@@ -128,6 +128,19 @@ export interface ChartOptions {
   height?: number;
   /** Plot-area inset in CSS pixels. Any subset is allowed; missing edges use chart defaults. */
   margin?: { top?: number; right?: number; bottom?: number; left?: number };
+  /**
+   * Orientation of the chart. **Currently only meaningful for
+   * `type: 'bar'`**, where it controls whether bars run vertically (band
+   * scale on the x-axis, the default) or horizontally (band scale on the
+   * y-axis). Defaults to `'vertical'` when omitted.
+   *
+   * It lives on `ChartOptions` rather than a bar-specific options object so
+   * that programmatic specs keep a single options shape and a future chart
+   * type that wants orientation can adopt it without a schema change. Line,
+   * area, and every other current chart type **ignore** this field entirely
+   * — the validator neither warns nor errors when it is set on them.
+   */
+  orientation?: 'vertical' | 'horizontal';
 }
 
 /**

@@ -1,4 +1,5 @@
 import { AreaChart } from '../charts/AreaChart.js';
+import { BarChart } from '../charts/BarChart.js';
 import { LineChart } from '../charts/LineChart.js';
 import type { Chart } from '../core/Chart.js';
 
@@ -66,12 +67,16 @@ export async function render(spec: ChartSpec, container: HTMLElement): Promise<C
       await chart.init();
       return chart;
     }
-    case 'bar':
+    case 'bar': {
+      const chart = new BarChart({ container, spec: validated });
+      await chart.init();
+      return chart;
+    }
     case 'scatter':
     case 'heatmap':
     case 'pie':
       throw new Error(
-        `Chart type "${validated.type}" is not implemented yet. Available: line, area.`,
+        `Chart type "${validated.type}" is not implemented yet. Available: line, area, bar.`,
       );
   }
 }

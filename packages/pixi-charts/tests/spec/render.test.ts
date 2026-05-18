@@ -75,6 +75,7 @@ vi.mock('pixi.js', () => {
 });
 
 import { AreaChart } from '../../src/charts/AreaChart.js';
+import { BarChart } from '../../src/charts/BarChart.js';
 import { LineChart } from '../../src/charts/LineChart.js';
 import type { ChartSpec } from '../../src/spec/ChartSpec.js';
 import { render } from '../../src/spec/render.js';
@@ -126,6 +127,27 @@ describe('render(spec, container)', () => {
     const container = makeContainer();
     const chart = await render({ ...validLineSpec, type: 'area' }, container);
     expect(chart).toBeInstanceOf(AreaChart);
+    expect(chart.initialized).toBe(true);
+    expect(chart.destroyed).toBe(false);
+    chart.destroy();
+  });
+
+  it('returns a fully-rendered BarChart instance for a valid bar spec', async () => {
+    const container = makeContainer();
+    const barSpec: ChartSpec = {
+      type: 'bar',
+      data: [
+        { name: 'A', count: 10 },
+        { name: 'B', count: 20 },
+      ],
+      encoding: {
+        x: { field: 'name', type: 'categorical' },
+        y: { field: 'count', type: 'quantitative' },
+      },
+      animation: { enter: false },
+    };
+    const chart = await render(barSpec, container);
+    expect(chart).toBeInstanceOf(BarChart);
     expect(chart.initialized).toBe(true);
     expect(chart.destroyed).toBe(false);
     chart.destroy();

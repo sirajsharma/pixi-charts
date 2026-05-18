@@ -432,6 +432,28 @@ export function formatCartesianTooltip(
   return `${xField}: ${xStr} • ${yField}: ${yStr}`;
 }
 
+/**
+ * Format a generic two-field tooltip line: `${labelField}: ${label} •
+ * ${valueField}: ${valueStr}`, with the numeric value formatted via
+ * `d3-format`'s `,.2~f` — byte-identical numeric formatting to the y-value
+ * in {@link formatCartesianTooltip}.
+ *
+ * BarChart's hit datum is a `{ category, value }` record, not a
+ * {@link CartesianHit} (`{ series, point }`), so it cannot reuse
+ * `formatCartesianTooltip` directly. This is an **additive sibling**, not a
+ * refactor: the cartesian (series/point) charts keep calling
+ * `formatCartesianTooltip` unchanged, so their tooltip output is provably
+ * untouched by this session.
+ */
+export function formatCategoryValueTooltip(
+  labelField: string,
+  label: string,
+  valueField: string,
+  value: number,
+): string {
+  return `${labelField}: ${label} • ${valueField}: ${d3format(',.2~f')(value)}`;
+}
+
 /** Resolve the effective plot margin from the spec, falling back to defaults. */
 export function resolveMargin(spec: ChartSpec): {
   top: number;

@@ -142,6 +142,103 @@ describe('validateChartSpec — semantic checks', () => {
   });
 });
 
+describe('validateChartSpec — bar-specific encoding requirements', () => {
+  const barData = [
+    { name: 'A', count: 10 },
+    { name: 'B', count: 20 },
+  ];
+
+  it('passes for a valid vertical bar spec (x categorical, y quantitative)', () => {
+    const result = validateChartSpec({
+      type: 'bar',
+      data: barData,
+      encoding: {
+        x: { field: 'name', type: 'categorical' },
+        y: { field: 'count', type: 'quantitative' },
+      },
+    });
+    expect(result.type).toBe('bar');
+  });
+
+  it('throws a teaching error naming encoding.x.type for a vertical bar with quantitative x', () => {
+    const spec = {
+      type: 'bar',
+      data: barData,
+      encoding: {
+        x: { field: 'name', type: 'quantitative' as const },
+        y: { field: 'count', type: 'quantitative' as const },
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.x\.type/);
+    expect(() => validateChartSpec(spec)).toThrow(/categorical/);
+    expect(() => validateChartSpec(spec)).toThrow(/vertical/);
+  });
+
+  it('passes for a valid horizontal bar spec (y categorical, x quantitative)', () => {
+    const result = validateChartSpec({
+      type: 'bar',
+      data: barData,
+      encoding: {
+        x: { field: 'count', type: 'quantitative' },
+        y: { field: 'name', type: 'categorical' },
+      },
+      options: { orientation: 'horizontal' },
+    });
+    expect(result.type).toBe('bar');
+  });
+
+  it('throws a teaching error naming encoding.y.type for a horizontal bar with quantitative y', () => {
+    const spec = {
+      type: 'bar',
+      data: barData,
+      encoding: {
+        x: { field: 'count', type: 'quantitative' as const },
+        y: { field: 'name', type: 'quantitative' as const },
+      },
+      options: { orientation: 'horizontal' as const },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.y\.type/);
+    expect(() => validateChartSpec(spec)).toThrow(/horizontal/);
+  });
+
+  it('throws when options.orientation is an invalid value', () => {
+    const spec = {
+      type: 'bar',
+      data: barData,
+      encoding: {
+        x: { field: 'name', type: 'categorical' as const },
+        y: { field: 'count', type: 'quantitative' as const },
+      },
+      options: { orientation: 'sideways' as unknown as 'vertical' },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/options\.orientation/);
+  });
+});
+
+describe('validateChartSpec — orientation is ignored for non-bar charts', () => {
+  it('does not throw or warn when a line spec sets options.orientation', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spec = { ...validLineSpec, options: { orientation: 'horizontal' as const } };
+    expect(() => validateChartSpec(spec)).not.toThrow();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('does not throw or warn when an area spec sets options.orientation', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spec = {
+      ...validLineSpec,
+      type: 'area' as const,
+      options: { orientation: 'vertical' as const },
+    };
+    expect(() => validateChartSpec(spec)).not.toThrow();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
 describe('validateChartSpec — forward compatibility', () => {
   const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
