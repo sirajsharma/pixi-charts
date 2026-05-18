@@ -1,0 +1,9 @@
+- generic [ref=e2]:
+    - figure "vertical (single color)" [ref=e3]:
+        - generic [ref=e4]: vertical (single color)
+    - figure "horizontal (single color)" [ref=e7]:
+        - generic [ref=e8]: horizontal (single color)
+    - figure "vertical, negative values [-50,100]" [ref=e10]:
+        - generic [ref=e11]: vertical, negative values [-50,100]
+    - figure "vertical, color-encoded + legend" [ref=e13]:
+        - generic [ref=e14]: vertical, color-encoded + legend
