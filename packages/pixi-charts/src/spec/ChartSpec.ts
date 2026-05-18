@@ -40,19 +40,36 @@ export interface EncodingField {
 }
 
 /**
- * Color channel encoding. Unlike positional encodings, color is always
- * "categorical-ish" for v1 — the field's distinct values produce one
- * series each. A continuous color encoding (heatmap-style) will be added
- * alongside the heatmap chart type.
+ * Color channel encoding.
+ *
+ * For line / area / bar this is always categorical: the field's distinct
+ * values produce one series (or one per-bar color) each — `type` is ignored
+ * by those charts. `ScatterChart` (Session 7) is the first chart to support
+ * a **quantitative** color field, mapped through a continuous sequential
+ * scale instead of a discrete palette.
  */
 export interface ColorEncoding {
-  /** Name of the column whose distinct values become series. */
+  /** Name of the column to colour by. */
   field: string;
   /**
-   * Name of a categorical or sequential color scheme. Resolved by the
-   * chart against {@link import('../core/ColorScheme.js').categoricalSchemes}
-   * (and, in future, sequential schemes for continuous color). When
-   * omitted the chart picks a sensible default (typically `category10`).
+   * How the colour field is interpreted:
+   *
+   * - `'categorical'` — each distinct value gets a discrete colour from a
+   *   categorical palette.
+   * - `'quantitative'` — values are mapped through a continuous sequential
+   *   colour scale (e.g. viridis), paired with a continuous legend.
+   * - omitted — treated as categorical. (Line/area/bar are categorical-only
+   *   and ignore this field; scatter must set `'quantitative'` explicitly to
+   *   opt into continuous colour.)
+   */
+  type?: 'categorical' | 'quantitative';
+  /**
+   * Colour scheme name. For categorical fields, one of the categorical
+   * scheme names ({@link import('../core/ColorScheme.js').categoricalSchemes});
+   * for quantitative fields, one of the sequential scheme names
+   * ({@link import('../core/ColorScheme.js').sequentialSchemes}). When
+   * omitted the chart picks a sensible per-type default (`category10` for
+   * categorical, `viridis` for quantitative).
    */
   scheme?: string;
 }
@@ -76,7 +93,10 @@ export interface ChartEncoding {
   y?: EncodingField;
   /** Color channel (categorical series split). */
   color?: ColorEncoding;
-  /** Size channel — scatter only. Not consumed in this release. */
+  /**
+   * Size channel — scatter only. The field's values drive a square-root
+   * radius scale (area ∝ value). Ignored by line/area/bar.
+   */
   size?: { field: string };
   /** Value channel — pie / heatmap. Not consumed in this release. */
   value?: { field: string };

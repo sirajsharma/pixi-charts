@@ -27,3 +27,4 @@ export { Chart } from './core/Chart.js';
 export { LineChart } from './charts/LineChart.js';
 export { AreaChart } from './charts/AreaChart.js';
 export { BarChart } from './charts/BarChart.js';
+export { ScatterChart } from './charts/ScatterChart.js';

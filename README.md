@@ -8,6 +8,8 @@
 
 SVG-based charting libraries (Recharts, Chart.js, D3-with-SVG) hit a wall around 10k DOM nodes. `pixi-charts` renders to a single WebGL canvas via PixiJS, targeting **60fps with 100k+ data points** and graceful handling up to 1M points. The math (scales, layouts, color interpolation, spatial indexing) is delegated to D3 submodules — only the rendering layer is replaced.
 
+The **scatter chart** makes this concrete: 100k+ points draw in a single `ParticleContainer` batch and hover hit-testing stays sub-frame via `d3-quadtree` spatial indexing — no linear scans, no per-point sprites. A live `dev/scatter-perf.html` harness benchmarks it at 1k / 10k / 100k / 1M.
+
 ## Install
 
 ```sh
@@ -51,7 +53,7 @@ chart.destroy();
 - [x] **Line** — single- or multi-series, quantitative / categorical / temporal x-axis, hover tooltips, automatic LTTB downsampling above 10,000 points per series.
 - [x] **Area** — single- or multi-series filled area with a stroked top edge; same series composition, downsampling, and interaction as Line. Baseline projects zero through the y-scale (handles domains that don't include or that cross zero). Stacking not yet supported.
 - [x] **Bar** — single series, vertical or horizontal (`options.orientation`). Per-bar color via a categorical color encoding (color by the category field for one color per bar). Baseline projects zero through the value scale, so negative values and domains that don't include zero render correctly. Grouped / stacked (multi-series) bars not yet supported.
-- [ ] Scatter
+- [x] **Scatter** — handles **100k+ points at 60fps** via a single PixiJS v8 `ParticleContainer` (one batched draw call) and `d3-quadtree` spatial indexing for sub-frame hover hit-testing. Quantitative or temporal x/y; optional **continuous colour** (sequential scheme, default viridis, with a gradient legend) or categorical colour; optional **size** encoding on a square-root scale (area ∝ value).
 - [ ] Heatmap
 - [ ] Pie / Donut
 
@@ -75,6 +77,18 @@ pnpm typecheck     # tsc --noEmit across the workspace
 pnpm lint          # eslint
 pnpm build         # tsup → dist/
 ```
+
+### Scatter performance harness
+
+`packages/pixi-charts/dev/scatter-perf.html` benchmarks ScatterChart at 1k / 10k / 100k / 1M points (on-page FPS + `render()` timer). It loads the built bundle, so run `pnpm build` first, then serve the **`dev/` directory** and open it at the server root:
+
+```sh
+pnpm build
+npx vite packages/pixi-charts/dev      # or: npx serve packages/pixi-charts/dev
+# open  http://localhost:<port>/scatter-perf.html      ← note: NOT /dev/scatter-perf.html
+```
+
+The page is served from the `dev/` root, so the path is `/scatter-perf.html`. Requesting `/dev/scatter-perf.html` hits the SPA fallback and silently serves the LineChart demo (`index.html`) instead. The 1M tier intentionally stresses the architecture and briefly blocks the main thread while it allocates — that's the stress ceiling, not a hang.
 
 ## License
 

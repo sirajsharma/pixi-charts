@@ -181,6 +181,13 @@ export class LineChart extends Chart {
 
     const stage = this.app.stage;
 
+    // Cancel the prior pass's enter tween before tearing down its targets.
+    // The real-browser ResizeObserver fires immediately on observe(), so a
+    // resize re-enters render() mid enter-animation; without this the tween's
+    // next tick draws into a just-destroyed Graphics and crashes. (Unit tests
+    // miss it — the mock ResizeObserver never auto-fires during a live tween.)
+    this.cancelAllTweens();
+
     // Tear down any prior content. On a resize this can be the second
     // pass; the first pass starts with all slots null.
     if (this.plotContainer !== null) {

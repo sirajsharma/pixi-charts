@@ -27,6 +27,7 @@ const encodingFieldSchema = z.object({
 
 const colorEncodingSchema = z.object({
   field: z.string(),
+  type: z.enum(['categorical', 'quantitative']).optional(),
   scheme: z.string().optional(),
 });
 
@@ -184,6 +185,9 @@ const KNOWN_SPEC_KEYS = new Set(['type', 'data', 'encoding', 'options', 'animati
  *   `encoding.y` are required.
  * - For `type: 'bar'`, the category/value axis roles depend on
  *   `options.orientation` — see {@link requireBarEncoding}.
+ * - For `type: 'scatter'`, `encoding.x`/`encoding.y` are required and must
+ *   be quantitative or temporal; quantitative-color and size fields are
+ *   sanity-checked with warnings — see {@link requireScatterEncoding}.
  *
  * `options.orientation` is validated for its *shape* (one of `'vertical'` /
  * `'horizontal'`) for every spec, but its *meaning* is read only for
@@ -263,6 +267,92 @@ function requireBarEncoding(spec: ChartSpec): void {
   requireChannel(valueChannel, 'quantitative');
 }
 
+/** True only for a value that is (or parses to) a finite number. */
+function isFiniteNumeric(v: unknown): boolean {
+  if (typeof v === 'number') return Number.isFinite(v);
+  if (typeof v === 'string' && v !== '') return Number.isFinite(Number(v));
+  return false;
+}
+
+/**
+ * Scatter-chart encoding rule.
+ *
+ * - `encoding.x` and `encoding.y` are both required and must be
+ *   `'quantitative'` or `'temporal'`. Categorical x/y (a strip/dot plot) is
+ *   an unusual encoding deliberately rejected for v1 with a teaching error —
+ *   the common categorical-vs-quantitative case is a bar chart.
+ * - A `'quantitative'` `encoding.color` field that contains missing or
+ *   non-numeric values **warns** (not rejects): a sparse column still yields
+ *   a usable plot (such points clamp to the colour-scale domain edge), and a
+ *   hard failure on real-world data would be hostile.
+ * - A negative `encoding.size` value **warns**: the square-root size scale
+ *   still renders it, but a negative magnitude is almost always a data bug.
+ *
+ * Field *existence* is enforced by the shared check in
+ * {@link validateChartSpec} (which throws a better teaching error), so the
+ * data scans here are guarded by first-row presence and never duplicate it.
+ */
+function requireScatterEncoding(spec: ChartSpec): void {
+  const requirePositional = (channel: 'x' | 'y'): void => {
+    const enc = spec.encoding[channel];
+    if (enc === undefined) {
+      throw new ChartSpecValidationError(
+        `ChartSpec(type: 'scatter') requires \`encoding.${channel}\`. A scatter plot ` +
+          `draws one point per row at (x, y); both axes are mandatory. Example: ` +
+          `{ x: { field: 'weight', type: 'quantitative' }, ` +
+          `y: { field: 'height', type: 'quantitative' } }.`,
+      );
+    }
+    if (enc.type !== 'quantitative' && enc.type !== 'temporal') {
+      throw new ChartSpecValidationError(
+        `For scatter charts, \`encoding.${channel}.type\` must be ` +
+          `'quantitative' or 'temporal'. Received: '${enc.type}'. Categorical scatter ` +
+          `(a strip/dot plot) is an unusual encoding not supported in v1 — use a bar ` +
+          `chart for categorical-vs-quantitative, or move the category to the \`color\` ` +
+          `channel. Example: { field: '${enc.field}', type: 'quantitative' }.`,
+      );
+    }
+  };
+  requirePositional('x');
+  requirePositional('y');
+
+  const firstRow = spec.data[0];
+  const hasField = (f: string): boolean =>
+    firstRow !== undefined && Object.prototype.hasOwnProperty.call(firstRow, f);
+
+  const color = spec.encoding.color;
+  if (color?.type === 'quantitative' && hasField(color.field)) {
+    let bad = 0;
+    for (const row of spec.data) {
+      if (!isFiniteNumeric(row[color.field])) bad += 1;
+    }
+    if (bad > 0) {
+      console.warn(
+        `pixi-charts: scatter quantitative color field "${color.field}" has ` +
+          `${String(bad)}/${String(spec.data.length)} missing or non-numeric values. ` +
+          `Those points clamp to the colour scale's domain edge; provide numeric ` +
+          `values for an accurate colour mapping.`,
+      );
+    }
+  }
+
+  const size = spec.encoding.size;
+  if (size !== undefined && hasField(size.field)) {
+    let neg = 0;
+    for (const row of spec.data) {
+      const v = row[size.field];
+      if (typeof v === 'number' && v < 0) neg += 1;
+    }
+    if (neg > 0) {
+      console.warn(
+        `pixi-charts: scatter size field "${size.field}" has ${String(neg)} negative ` +
+          `value(s). The square-root size scale still renders them, but a negative ` +
+          `size is visually meaningless — check the data.`,
+      );
+    }
+  }
+}
+
 export function validateChartSpec(input: unknown): ChartSpec {
   const parsed = chartSpecSchema.safeParse(input);
   if (!parsed.success) {
@@ -298,6 +388,7 @@ export function validateChartSpec(input: unknown): ChartSpec {
   if (spec.type === 'line') requireXAndY(spec, 'line');
   if (spec.type === 'area') requireXAndY(spec, 'area');
   if (spec.type === 'bar') requireBarEncoding(spec);
+  if (spec.type === 'scatter') requireScatterEncoding(spec);
 
   // Field existence check. We sample the first row only — the spec
   // contract is that data is row-uniform, and walking every row is

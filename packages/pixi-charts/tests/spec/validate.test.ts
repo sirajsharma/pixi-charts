@@ -217,6 +217,137 @@ describe('validateChartSpec — bar-specific encoding requirements', () => {
   });
 });
 
+describe('validateChartSpec — scatter-specific encoding requirements', () => {
+  const scatterData = [
+    { weight: 70, height: 175, bmi: 22.9, pop: 1200 },
+    { weight: 82, height: 168, bmi: 29.1, pop: 800 },
+  ];
+  const validScatterSpec = {
+    type: 'scatter' as const,
+    data: scatterData,
+    encoding: {
+      x: { field: 'weight', type: 'quantitative' as const },
+      y: { field: 'height', type: 'quantitative' as const },
+    },
+  };
+
+  it('passes for a valid scatter spec with quantitative x/y', () => {
+    const result = validateChartSpec(validScatterSpec);
+    expect(result.type).toBe('scatter');
+  });
+
+  it('passes with temporal x and quantitative y', () => {
+    expect(() =>
+      validateChartSpec({
+        ...validScatterSpec,
+        data: [{ t: '2024-01-01', height: 175 }],
+        encoding: {
+          x: { field: 't', type: 'temporal' as const },
+          y: { field: 'height', type: 'quantitative' as const },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it('throws a teaching error when encoding.x is categorical', () => {
+    const spec = {
+      ...validScatterSpec,
+      encoding: {
+        x: { field: 'weight', type: 'categorical' as const },
+        y: { field: 'height', type: 'quantitative' as const },
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.x\.type/);
+    expect(() => validateChartSpec(spec)).toThrow(/quantitative.*or.*temporal/);
+    expect(() => validateChartSpec(spec)).toThrow(/Example:/);
+  });
+
+  it('throws a teaching error when encoding.y is categorical', () => {
+    const spec = {
+      ...validScatterSpec,
+      encoding: {
+        x: { field: 'weight', type: 'quantitative' as const },
+        y: { field: 'height', type: 'categorical' as const },
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.y\.type/);
+  });
+
+  it('throws when encoding.x is missing', () => {
+    const spec = {
+      ...validScatterSpec,
+      encoding: { y: { field: 'height', type: 'quantitative' as const } },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.x/);
+    expect(() => validateChartSpec(spec)).toThrow(/type: 'scatter'/);
+  });
+
+  it('passes with a quantitative color encoding', () => {
+    expect(() =>
+      validateChartSpec({
+        ...validScatterSpec,
+        encoding: {
+          ...validScatterSpec.encoding,
+          color: { field: 'bmi', type: 'quantitative' as const, scheme: 'viridis' },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it('passes with a categorical color encoding (type omitted)', () => {
+    expect(() =>
+      validateChartSpec({
+        ...validScatterSpec,
+        data: [{ weight: 70, height: 175, grp: 'a' }],
+        encoding: { ...validScatterSpec.encoding, color: { field: 'grp' } },
+      }),
+    ).not.toThrow();
+  });
+
+  it('warns (does not throw) when a quantitative color field has non-numeric values', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spec = {
+      ...validScatterSpec,
+      data: [
+        { weight: 70, height: 175, bmi: 22.9 },
+        { weight: 82, height: 168, bmi: 'n/a' },
+      ],
+      encoding: {
+        ...validScatterSpec.encoding,
+        color: { field: 'bmi', type: 'quantitative' as const },
+      },
+    };
+    expect(() => validateChartSpec(spec)).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/non-numeric/));
+    warnSpy.mockRestore();
+  });
+
+  it('throws (shared existence check) when the size field does not exist', () => {
+    const spec = {
+      ...validScatterSpec,
+      encoding: { ...validScatterSpec.encoding, size: { field: 'nope' } },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/"nope"/);
+  });
+
+  it('warns (does not throw) when the size field has negative values', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spec = {
+      ...validScatterSpec,
+      data: [
+        { weight: 70, height: 175, mag: 5 },
+        { weight: 82, height: 168, mag: -3 },
+      ],
+      encoding: { ...validScatterSpec.encoding, size: { field: 'mag' } },
+    };
+    expect(() => validateChartSpec(spec)).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/negative/));
+    warnSpy.mockRestore();
+  });
+});
+
 describe('validateChartSpec — orientation is ignored for non-bar charts', () => {
   it('does not throw or warn when a line spec sets options.orientation', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
