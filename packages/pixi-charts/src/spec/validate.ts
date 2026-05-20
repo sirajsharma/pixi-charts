@@ -353,6 +353,99 @@ function requireScatterEncoding(spec: ChartSpec): void {
   }
 }
 
+/**
+ * Heatmap encoding rule.
+ *
+ * - `encoding.x` and `encoding.y` are both required and must be
+ *   `'categorical'`. v1 does **not** implement automatic binning of
+ *   continuous values into cells: that's a separate feature with its own
+ *   design choices (bin count, equal-width vs. equal-frequency, etc.). A
+ *   teaching error names the path AND mentions the binning scope so
+ *   consumers see *why* the categorical constraint exists rather than just
+ *   the constraint itself.
+ * - `encoding.color` is required and must be `'quantitative'`. A heatmap
+ *   without colour is meaningless — colour IS the chart's primary visual
+ *   channel — and a categorical-colour heatmap is a different chart
+ *   (closer to a confusion matrix) not in scope for v1.
+ * - `encoding.value` is required: it is the field carrying each cell's
+ *   numeric magnitude (driving the colour scale's input). The shared
+ *   field-existence check in {@link validateChartSpec} verifies it
+ *   afterwards.
+ * - Duplicate `(x, y)` pairs are **warned**, not rejected: the chart will
+ *   pick one arbitrarily (last-write-wins), which is almost always an
+ *   upstream aggregation bug worth surfacing without hard-failing.
+ */
+function requireHeatmapEncoding(spec: ChartSpec): void {
+  const requireCategorical = (channel: 'x' | 'y'): void => {
+    const enc = spec.encoding[channel];
+    if (enc === undefined) {
+      throw new ChartSpecValidationError(
+        `ChartSpec(type: 'heatmap') requires \`encoding.${channel}\`. A heatmap ` +
+          `draws one cell per (x, y) pair; both axes are mandatory. Example: ` +
+          `{ field: 'hour', type: 'categorical' }.`,
+      );
+    }
+    if (enc.type !== 'categorical') {
+      throw new ChartSpecValidationError(
+        `For heatmaps, \`encoding.${channel}.type\` must be 'categorical'. ` +
+          `Received: '${enc.type}'. Heatmaps in v1 do not auto-bin continuous ` +
+          `data — pre-bin into discrete categories upstream and pass the binned ` +
+          `field with \`type: 'categorical'\`. Example: ` +
+          `{ field: '${enc.field}', type: 'categorical' }.`,
+      );
+    }
+  };
+  requireCategorical('x');
+  requireCategorical('y');
+
+  const color = spec.encoding.color;
+  if (color === undefined) {
+    throw new ChartSpecValidationError(
+      `ChartSpec(type: 'heatmap') requires \`encoding.color\`. Color IS the ` +
+        `heatmap's primary visual channel — without it the cells have nothing ` +
+        `to encode. Example: { field: 'count', type: 'quantitative' }.`,
+    );
+  }
+  if (color.type !== 'quantitative') {
+    throw new ChartSpecValidationError(
+      `For heatmaps, \`encoding.color.type\` must be 'quantitative'. Received: ` +
+        `'${String(color.type)}'. Heatmaps require quantitative color (a sequential ` +
+        `interpolator like viridis); a categorical-color heatmap is a different ` +
+        `chart (more like a confusion matrix) and not in scope for v1. Example: ` +
+        `{ field: '${color.field}', type: 'quantitative', scheme: 'viridis' }.`,
+    );
+  }
+
+  if (spec.encoding.value === undefined) {
+    throw new ChartSpecValidationError(
+      `ChartSpec(type: 'heatmap') requires \`encoding.value\` — the field ` +
+        `carrying each cell's numeric magnitude. Example: { field: 'count' }.`,
+    );
+  }
+
+  // Warn (don't throw) on duplicate (x, y) pairs. The chart picks last-write-
+  // wins; a duplicate is almost always an upstream aggregation bug.
+  const xField = spec.encoding.x?.field;
+  const yField = spec.encoding.y?.field;
+  if (xField !== undefined && yField !== undefined) {
+    const seen = new Set<string>();
+    let duplicates = 0;
+    for (const row of spec.data) {
+      const key = `${String(row[xField])} ${String(row[yField])}`;
+      if (seen.has(key)) duplicates += 1;
+      else seen.add(key);
+    }
+    if (duplicates > 0) {
+      console.warn(
+        `pixi-charts: heatmap data has ${String(duplicates)} duplicate (x, y) ` +
+          `pair(s) on fields ("${xField}", "${yField}"). The chart picks one ` +
+          `arbitrarily per cell — usually a sign the upstream aggregation needs ` +
+          `attention.`,
+      );
+    }
+  }
+}
+
 export function validateChartSpec(input: unknown): ChartSpec {
   const parsed = chartSpecSchema.safeParse(input);
   if (!parsed.success) {
@@ -389,6 +482,7 @@ export function validateChartSpec(input: unknown): ChartSpec {
   if (spec.type === 'area') requireXAndY(spec, 'area');
   if (spec.type === 'bar') requireBarEncoding(spec);
   if (spec.type === 'scatter') requireScatterEncoding(spec);
+  if (spec.type === 'heatmap') requireHeatmapEncoding(spec);
 
   // Field existence check. We sample the first row only — the spec
   // contract is that data is row-uniform, and walking every row is

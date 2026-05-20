@@ -348,6 +348,146 @@ describe('validateChartSpec — scatter-specific encoding requirements', () => {
   });
 });
 
+describe('validateChartSpec — heatmap-specific encoding requirements', () => {
+  const heatmapData = [
+    { hour: '08', day: 'Mon', count: 3 },
+    { hour: '08', day: 'Tue', count: 5 },
+    { hour: '09', day: 'Mon', count: 7 },
+    { hour: '09', day: 'Tue', count: 11 },
+  ];
+  const validHeatmapSpec = {
+    type: 'heatmap' as const,
+    data: heatmapData,
+    encoding: {
+      x: { field: 'hour', type: 'categorical' as const },
+      y: { field: 'day', type: 'categorical' as const },
+      color: { field: 'count', type: 'quantitative' as const, scheme: 'viridis' },
+      value: { field: 'count' },
+    },
+  };
+
+  it('passes for a valid heatmap spec', () => {
+    const result = validateChartSpec(validHeatmapSpec);
+    expect(result.type).toBe('heatmap');
+    expect(result.encoding.value?.field).toBe('count');
+  });
+
+  it('throws when encoding.x is missing', () => {
+    const spec = {
+      ...validHeatmapSpec,
+      encoding: {
+        y: validHeatmapSpec.encoding.y,
+        color: validHeatmapSpec.encoding.color,
+        value: validHeatmapSpec.encoding.value,
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.x/);
+    expect(() => validateChartSpec(spec)).toThrow(/type: 'heatmap'/);
+  });
+
+  it('throws when encoding.y is missing', () => {
+    const spec = {
+      ...validHeatmapSpec,
+      encoding: {
+        x: validHeatmapSpec.encoding.x,
+        color: validHeatmapSpec.encoding.color,
+        value: validHeatmapSpec.encoding.value,
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.y/);
+  });
+
+  it('throws a binning-scope teaching error when encoding.x.type is quantitative', () => {
+    const spec = {
+      ...validHeatmapSpec,
+      encoding: {
+        ...validHeatmapSpec.encoding,
+        x: { field: 'hour', type: 'quantitative' as const },
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.x\.type/);
+    expect(() => validateChartSpec(spec)).toThrow(/categorical/);
+    expect(() => validateChartSpec(spec)).toThrow(/pre-bin/);
+  });
+
+  it('throws when encoding.y.type is temporal (also points at the binning scope)', () => {
+    const spec = {
+      ...validHeatmapSpec,
+      encoding: {
+        ...validHeatmapSpec.encoding,
+        y: { field: 'day', type: 'temporal' as const },
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.y\.type/);
+    expect(() => validateChartSpec(spec)).toThrow(/pre-bin/);
+  });
+
+  it('throws when encoding.color is missing', () => {
+    const spec = {
+      ...validHeatmapSpec,
+      encoding: {
+        x: validHeatmapSpec.encoding.x,
+        y: validHeatmapSpec.encoding.y,
+        value: validHeatmapSpec.encoding.value,
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.color/);
+    expect(() => validateChartSpec(spec)).toThrow(/primary visual channel/);
+  });
+
+  it('throws a quantitative-only teaching error when encoding.color.type is categorical', () => {
+    const spec = {
+      ...validHeatmapSpec,
+      encoding: {
+        ...validHeatmapSpec.encoding,
+        color: { field: 'count', type: 'categorical' as const },
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.color\.type/);
+    expect(() => validateChartSpec(spec)).toThrow(/quantitative/);
+    expect(() => validateChartSpec(spec)).toThrow(/heatmaps require quantitative color/i);
+  });
+
+  it('throws when encoding.value is missing', () => {
+    const spec = {
+      ...validHeatmapSpec,
+      encoding: {
+        x: validHeatmapSpec.encoding.x,
+        y: validHeatmapSpec.encoding.y,
+        color: validHeatmapSpec.encoding.color,
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.value/);
+  });
+
+  it('warns (does not throw) when data has duplicate (x, y) pairs', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spec = {
+      ...validHeatmapSpec,
+      data: [
+        ...heatmapData,
+        { hour: '08', day: 'Mon', count: 99 }, // duplicate of row 0
+      ],
+    };
+    expect(() => validateChartSpec(spec)).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/duplicate \(x, y\) pair/));
+    warnSpy.mockRestore();
+  });
+
+  it('throws (shared existence check) when the value field does not exist in data', () => {
+    const spec = {
+      ...validHeatmapSpec,
+      encoding: { ...validHeatmapSpec.encoding, value: { field: 'nope' } },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/"nope"/);
+  });
+});
+
 describe('validateChartSpec — orientation is ignored for non-bar charts', () => {
   it('does not throw or warn when a line spec sets options.orientation', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);

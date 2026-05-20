@@ -161,14 +161,14 @@ describe('render(spec, container)', () => {
 
   it('throws a useful message for unimplemented chart types', async () => {
     const container = makeContainer();
-    // 'scatter' is implemented as of Session 7; 'heatmap'/'pie' remain the
-    // not-yet-implemented dispatch targets.
+    // 'heatmap' is implemented as of Session 8; 'pie' remains the only
+    // not-yet-implemented dispatch target.
     const spec: ChartSpec = {
       ...validLineSpec,
-      type: 'heatmap',
+      type: 'pie',
     };
     await expect(render(spec, container)).rejects.toThrow(
-      /not implemented yet.*Available: line, area, bar, scatter/,
+      /not implemented yet.*Available: line, area, bar, scatter, heatmap/,
     );
   });
 });
