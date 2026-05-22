@@ -50,14 +50,20 @@ chart.destroy();
 
 ## Available chart types
 
+The v0.1 chart roster is complete — every type below ships and is dispatched by `render({ type, ... })`.
+
 - [x] **Line** — single- or multi-series, quantitative / categorical / temporal x-axis, hover tooltips, automatic LTTB downsampling above 10,000 points per series.
 - [x] **Area** — single- or multi-series filled area with a stroked top edge; same series composition, downsampling, and interaction as Line. Baseline projects zero through the y-scale (handles domains that don't include or that cross zero). Stacking not yet supported.
 - [x] **Bar** — single series, vertical or horizontal (`options.orientation`). Per-bar color via a categorical color encoding (color by the category field for one color per bar). Baseline projects zero through the value scale, so negative values and domains that don't include zero render correctly. Grouped / stacked (multi-series) bars not yet supported.
 - [x] **Scatter** — handles **100k+ points at 60fps** via a single PixiJS v8 `ParticleContainer` (one batched draw call) and `d3-quadtree` spatial indexing for sub-frame hover hit-testing. Quantitative or temporal x/y; optional **continuous colour** (sequential scheme, default viridis, with a gradient legend) or categorical colour; optional **size** encoding on a square-root scale (area ∝ value).
 - [x] **Heatmap** — categorical × categorical grid coloured by a quantitative value field, rendered via a buffer-backed `PIXI.Texture` (PIXI v8's `BufferImageSource` with `scaleMode: 'nearest'` for crisp cell edges) stretched across the plot area in a **single draw call** regardless of grid size. Always pairs with a continuous gradient legend. Sparse `(x, y)` pairs render transparent. v1 does not auto-bin continuous data — pre-bin upstream and pass `type: 'categorical'`.
-- [ ] Pie / Donut
+- [x] **Pie / Donut** — categorical proportions of a whole, drawn as filled arcs with a parallel sweep enter animation. `options.innerRadius: 0` (default) renders a true pie; any positive value renders a donut. Polar-coordinate hit-testing returns the slice under the cursor (including donut-hole rejection), and the tooltip carries both raw value and `(% of total)`. Slice labels, exploded slices, leader lines, and multi-ring donuts are deliberately out of scope for v1.
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the architectural principles every chart implementation follows.
+
+### Future polish
+
+The chart roster is complete; future work focuses on polish and second-order features rather than new chart kinds — slice labels on pies, exploded / leader-line variants, grouped and stacked bars, area stacking, custom shaders for very large scatter renderings, and on-demand binning for heatmaps.
 
 ## Monorepo layout
 

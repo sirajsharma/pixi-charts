@@ -26,6 +26,7 @@ vi.mock('pixi.js', () => {
     clear = vi.fn(() => this);
     moveTo = vi.fn(() => this);
     lineTo = vi.fn(() => this);
+    arc = vi.fn(() => this);
     closePath = vi.fn(() => this);
     rect = vi.fn(() => this);
     fill = vi.fn(() => this);
@@ -77,6 +78,7 @@ vi.mock('pixi.js', () => {
 import { AreaChart } from '../../src/charts/AreaChart.js';
 import { BarChart } from '../../src/charts/BarChart.js';
 import { LineChart } from '../../src/charts/LineChart.js';
+import { PieChart } from '../../src/charts/PieChart.js';
 import type { ChartSpec } from '../../src/spec/ChartSpec.js';
 import { render } from '../../src/spec/render.js';
 import { ChartSpecValidationError } from '../../src/spec/validate.js';
@@ -159,16 +161,24 @@ describe('render(spec, container)', () => {
     await expect(render(bad, container)).rejects.toBeInstanceOf(ChartSpecValidationError);
   });
 
-  it('throws a useful message for unimplemented chart types', async () => {
+  it('returns a fully-rendered PieChart instance for a valid pie spec', async () => {
     const container = makeContainer();
-    // 'heatmap' is implemented as of Session 8; 'pie' remains the only
-    // not-yet-implemented dispatch target.
-    const spec: ChartSpec = {
-      ...validLineSpec,
+    const pieSpec: ChartSpec = {
       type: 'pie',
+      data: [
+        { browser: 'Chrome', share: 60 },
+        { browser: 'Safari', share: 40 },
+      ],
+      encoding: {
+        x: { field: 'browser', type: 'categorical' },
+        value: { field: 'share' },
+      },
+      animation: { enter: false },
     };
-    await expect(render(spec, container)).rejects.toThrow(
-      /not implemented yet.*Available: line, area, bar, scatter, heatmap/,
-    );
+    const chart = await render(pieSpec, container);
+    expect(chart).toBeInstanceOf(PieChart);
+    expect(chart.initialized).toBe(true);
+    expect(chart.destroyed).toBe(false);
+    chart.destroy();
   });
 });

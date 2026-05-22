@@ -2,6 +2,7 @@ import { AreaChart } from '../charts/AreaChart.js';
 import { BarChart } from '../charts/BarChart.js';
 import { HeatmapChart } from '../charts/HeatmapChart.js';
 import { LineChart } from '../charts/LineChart.js';
+import { PieChart } from '../charts/PieChart.js';
 import { ScatterChart } from '../charts/ScatterChart.js';
 import type { Chart } from '../core/Chart.js';
 
@@ -53,7 +54,6 @@ import { validateChartSpec } from './validate.js';
  * ```
  *
  * @throws {ChartSpecValidationError} If `spec` fails validation.
- * @throws {Error} If `spec.type` is recognized but not yet implemented.
  */
 export async function render(spec: ChartSpec, container: HTMLElement): Promise<Chart> {
   const validated = validateChartSpec(spec);
@@ -84,9 +84,16 @@ export async function render(spec: ChartSpec, container: HTMLElement): Promise<C
       await chart.init();
       return chart;
     }
-    case 'pie':
-      throw new Error(
-        `Chart type "${validated.type}" is not implemented yet. Available: line, area, bar, scatter, heatmap.`,
-      );
+    case 'pie': {
+      const chart = new PieChart({ container, spec: validated });
+      await chart.init();
+      return chart;
+    }
+    default: {
+      // Exhaustiveness check — adding a new ChartType without updating this
+      // dispatcher becomes a compile-time error here.
+      const _exhaustive: never = validated.type;
+      throw new Error(`Unhandled chart type: ${String(_exhaustive)}`);
+    }
   }
 }

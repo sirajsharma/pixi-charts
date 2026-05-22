@@ -63,6 +63,12 @@ const chartOptionsSchema = z.object({
   height: z.number().optional(),
   margin: marginSchema.optional(),
   orientation: orientationSchema.optional(),
+  // Pie-only fields. Union with `z.nan()` because `z.number()` rejects NaN at
+  // the schema layer; we want NaN / Infinity / negatives to flow through to
+  // requirePieEncoding for teaching-style errors, AND to be silently ignored
+  // on non-pie specs that may set them speculatively.
+  innerRadius: z.union([z.number(), z.nan()]).optional(),
+  startAngle: z.union([z.number(), z.nan()]).optional(),
 });
 
 /**
@@ -99,6 +105,9 @@ const examples: Record<string, string> = {
   'encoding.color': '{ field: "category", scheme: "category10" }',
   'animation.enter': '{ duration: 600, ease: "easeOut" }',
   'options.orientation': '"vertical" | "horizontal"',
+  'encoding.value': '{ field: "count" }',
+  'options.innerRadius': '60   // pixels; 0 (default) is a true pie',
+  'options.startAngle': "-Math.PI / 2   // radians; 12 o'clock",
 };
 
 function pathToDotted(path: readonly (string | number)[]): string {
@@ -194,9 +203,11 @@ const KNOWN_SPEC_KEYS = new Set(['type', 'data', 'encoding', 'options', 'animati
  * `type: 'bar'`. Line, area, and other types that set it are neither warned
  * nor errored — the field is deliberately on the shared `ChartOptions`.
  *
- * Other chart types' encoding rules will be added alongside their
- * implementations; today they pass shape validation but throw at the
- * dispatcher level with a "not implemented yet" message.
+ * - For `type: 'heatmap'`, both axes must be categorical and `encoding.color`
+ *   and `encoding.value` are required — see {@link requireHeatmapEncoding}.
+ * - For `type: 'pie'`, `encoding.x` (categorical, the slice category) and
+ *   `encoding.value` are required; `encoding.color` may not be quantitative —
+ *   see {@link requirePieEncoding}.
  *
  * Unknown top-level keys do NOT fail validation — a `console.warn` is
  * emitted instead. This protects consumers writing forward-compat code
@@ -446,6 +457,112 @@ function requireHeatmapEncoding(spec: ChartSpec): void {
   }
 }
 
+/**
+ * Pie / donut encoding rule.
+ *
+ * - `encoding.x` is required and must be `'categorical'`. The x-encoding
+ *   carries the slice's category label; reusing `x` rather than adding a new
+ *   `encoding.category` field keeps the spec compact and mirrors how
+ *   {@link requireBarEncoding} reuses `x` for the bar's category axis. A
+ *   teaching error names the path AND mentions that this is how pies declare
+ *   slice categories — consumers won't intuit this without being told.
+ * - `encoding.value` is required: the field whose numeric magnitudes are
+ *   summed and divided into proportional angular slices.
+ * - `encoding.color`, if present, must NOT be `'quantitative'`. Pies use
+ *   categorical color (one swatch per slice); a continuous color gradient
+ *   across slices is not a meaningful encoding.
+ * - `options.innerRadius`, if present, must be a finite number `>= 0`.
+ *   Negative inner radii would invert geometry; NaN / Infinity would crash
+ *   downstream geometry math.
+ * - `options.startAngle`, if present, must be finite. NaN / Infinity would
+ *   poison every slice's angular position.
+ * - Zero or missing values in the value field **warn** (do not throw):
+ *   a zero-value slice renders as invisible, which is almost always an
+ *   upstream data bug worth surfacing — but a chart with one bad row is
+ *   still a usable chart.
+ */
+function requirePieEncoding(spec: ChartSpec): void {
+  const x = spec.encoding.x;
+  if (x === undefined) {
+    throw new ChartSpecValidationError(
+      `ChartSpec(type: 'pie') requires \`encoding.x\` to identify each slice's category. ` +
+        `Pies reuse the x-encoding for the categorical field (same way bar charts do) — ` +
+        `the field's distinct values become slice labels. Example: ` +
+        `{ field: 'browser', type: 'categorical' }.`,
+    );
+  }
+  if (x.type !== 'categorical') {
+    throw new ChartSpecValidationError(
+      `For pie charts, \`encoding.x.type\` must be 'categorical' (each distinct ` +
+        `value becomes one slice). Received: '${x.type}'. Pies do not support ` +
+        `continuous slices — pre-bin quantitative or temporal data into discrete ` +
+        `categories upstream. Example: { field: '${x.field}', type: 'categorical' }.`,
+    );
+  }
+
+  if (spec.encoding.value === undefined) {
+    throw new ChartSpecValidationError(
+      `ChartSpec(type: 'pie') requires \`encoding.value\` — the numeric field whose ` +
+        `magnitudes are summed and divided proportionally into slice angles. Example: ` +
+        `{ field: 'count' }. A minimal pie spec: ` +
+        `{ type: 'pie', data, encoding: { x: { field: 'browser', type: 'categorical' }, ` +
+        `value: { field: 'share' } } }.`,
+    );
+  }
+
+  const color = spec.encoding.color;
+  if (color?.type === 'quantitative') {
+    throw new ChartSpecValidationError(
+      `For pie charts, \`encoding.color.type\` must be 'categorical' (or omitted). ` +
+        `Received: 'quantitative'. A pie's slices are discrete categorical parts of a ` +
+        `whole — a continuous color gradient across them is not a meaningful encoding. ` +
+        `Drop \`type\` (defaults to categorical) or set it explicitly to 'categorical'.`,
+    );
+  }
+
+  const opts = spec.options;
+  if (opts?.innerRadius !== undefined) {
+    const r = opts.innerRadius;
+    if (!Number.isFinite(r) || r < 0) {
+      throw new ChartSpecValidationError(
+        `ChartSpec.options.innerRadius must be a finite number >= 0 (use 0 for a true ` +
+          `pie, or a positive pixel value for a donut). Received: ${String(r)}.`,
+      );
+    }
+  }
+  if (opts?.startAngle !== undefined) {
+    const a = opts.startAngle;
+    if (!Number.isFinite(a)) {
+      throw new ChartSpecValidationError(
+        `ChartSpec.options.startAngle must be a finite number in radians. Received: ` +
+          `${String(a)}. The default of -Math.PI / 2 starts the sweep at 12 o'clock.`,
+      );
+    }
+  }
+
+  // Warn (don't throw) on zero or missing values. Zero-value slices render
+  // as invisible, which is almost always an upstream data bug — but the
+  // chart is still drawable around them.
+  const valueField = spec.encoding.value.field;
+  let zeros = 0;
+  let missing = 0;
+  for (const row of spec.data) {
+    const v = row[valueField];
+    if (v === undefined || v === null) missing += 1;
+    else if (typeof v === 'number' && v === 0) zeros += 1;
+  }
+  if (zeros > 0 || missing > 0) {
+    const parts: string[] = [];
+    if (zeros > 0) parts.push(`${String(zeros)} zero value(s)`);
+    if (missing > 0) parts.push(`${String(missing)} missing value(s)`);
+    console.warn(
+      `pixi-charts: pie value field "${valueField}" has ${parts.join(' and ')}. ` +
+        `Those slices render as invisible (zero angular extent) — usually a sign the ` +
+        `data needs cleaning upstream.`,
+    );
+  }
+}
+
 export function validateChartSpec(input: unknown): ChartSpec {
   const parsed = chartSpecSchema.safeParse(input);
   if (!parsed.success) {
@@ -483,6 +600,7 @@ export function validateChartSpec(input: unknown): ChartSpec {
   if (spec.type === 'bar') requireBarEncoding(spec);
   if (spec.type === 'scatter') requireScatterEncoding(spec);
   if (spec.type === 'heatmap') requireHeatmapEncoding(spec);
+  if (spec.type === 'pie') requirePieEncoding(spec);
 
   // Field existence check. We sample the first row only — the spec
   // contract is that data is row-uniform, and walking every row is

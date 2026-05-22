@@ -14,13 +14,12 @@ import type { EasingName } from '../core/animation.js';
 export type FieldType = 'quantitative' | 'categorical' | 'temporal';
 
 /**
- * The kinds of chart supported (or planned) by the spec dispatcher.
+ * The kinds of chart supported by the spec dispatcher.
  *
- * Only `'line'` is implemented in this release; other types parse
- * successfully but will throw at {@link import('./render.js').render} time
- * with a "not implemented yet" message. The full union is declared up-front
- * so consumer code can author specs against the final API surface as new
- * chart types come online.
+ * All listed types are implemented and dispatched by
+ * {@link import('./render.js').render}. The union is closed: adding a new
+ * chart type is a coordinated change across this file, the validator,
+ * the dispatcher, and a chart implementation.
  */
 export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'heatmap' | 'pie';
 
@@ -98,7 +97,12 @@ export interface ChartEncoding {
    * radius scale (area ∝ value). Ignored by line/area/bar.
    */
   size?: { field: string };
-  /** Value channel — pie / heatmap. Not consumed in this release. */
+  /**
+   * Value channel — used by `pie` (the numeric value each slice represents,
+   * proportionally summed to the full circle) and reserved for `heatmap`'s
+   * cell value. The field is interpreted as quantitative; missing or
+   * non-finite values are skipped with a console warning.
+   */
   value?: { field: string };
 }
 
@@ -161,6 +165,28 @@ export interface ChartOptions {
    * — the validator neither warns nor errors when it is set on them.
    */
   orientation?: 'vertical' | 'horizontal';
+  /**
+   * Inner radius for pie charts, in CSS pixels. `0` (the default) renders a
+   * true pie; any positive value renders a donut. The value is clamped at
+   * render time to `[0, outerRadius - 1]` so a too-large inner radius
+   * degrades gracefully to "almost the full disk" rather than crashing.
+   *
+   * Like {@link orientation}, this lives on the general `ChartOptions` for
+   * shape simplicity. Non-pie chart types ignore it — the validator
+   * neither warns nor errors when it is set on them.
+   */
+  innerRadius?: number;
+  /**
+   * Starting angle of the pie sweep, in **radians**, using the same
+   * screen-coordinate convention as
+   * {@link import('../utils/geometry.js').pointToAngle}: `0` is 3 o'clock
+   * and angles increase clockwise. The default is `-Math.PI / 2`
+   * (12 o'clock — the most common pie-chart layout).
+   *
+   * Ignored by non-pie chart types; the validator does not warn or error
+   * when it is set on them.
+   */
+  startAngle?: number;
 }
 
 /**

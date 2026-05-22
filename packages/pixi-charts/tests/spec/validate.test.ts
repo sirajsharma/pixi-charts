@@ -510,6 +510,176 @@ describe('validateChartSpec — orientation is ignored for non-bar charts', () =
   });
 });
 
+describe('validateChartSpec — pie-specific encoding requirements', () => {
+  const pieData = [
+    { browser: 'Chrome', share: 60 },
+    { browser: 'Safari', share: 20 },
+    { browser: 'Firefox', share: 10 },
+    { browser: 'Edge', share: 10 },
+  ];
+  const validPieSpec = {
+    type: 'pie' as const,
+    data: pieData,
+    encoding: {
+      x: { field: 'browser', type: 'categorical' as const },
+      value: { field: 'share' },
+    },
+  };
+
+  it('passes for a valid pie spec', () => {
+    const result = validateChartSpec(validPieSpec);
+    expect(result.type).toBe('pie');
+    expect(result.encoding.x?.field).toBe('browser');
+    expect(result.encoding.value?.field).toBe('share');
+  });
+
+  it('passes for a valid donut spec (with options.innerRadius)', () => {
+    const spec = { ...validPieSpec, options: { innerRadius: 60 } };
+    const result = validateChartSpec(spec);
+    expect(result.options?.innerRadius).toBe(60);
+  });
+
+  it('passes for a spec that sets options.startAngle', () => {
+    const spec = { ...validPieSpec, options: { startAngle: 0 } };
+    const result = validateChartSpec(spec);
+    expect(result.options?.startAngle).toBe(0);
+  });
+
+  it('throws when encoding.x is missing', () => {
+    const spec = {
+      ...validPieSpec,
+      encoding: { value: validPieSpec.encoding.value },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.x/);
+    expect(() => validateChartSpec(spec)).toThrow(/category/);
+  });
+
+  it('throws a categorical-only teaching error when encoding.x.type is quantitative', () => {
+    const spec = {
+      ...validPieSpec,
+      encoding: {
+        ...validPieSpec.encoding,
+        x: { field: 'browser', type: 'quantitative' as const },
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.x\.type/);
+    expect(() => validateChartSpec(spec)).toThrow(/categorical/);
+    expect(() => validateChartSpec(spec)).toThrow(/pre-bin/);
+  });
+
+  it('throws when encoding.value is missing', () => {
+    const spec = {
+      ...validPieSpec,
+      encoding: { x: validPieSpec.encoding.x },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.value/);
+    expect(() => validateChartSpec(spec)).toThrow(/proportionally/);
+  });
+
+  it('throws when encoding.color.type is quantitative', () => {
+    const spec = {
+      ...validPieSpec,
+      encoding: {
+        ...validPieSpec.encoding,
+        color: { field: 'share', type: 'quantitative' as const },
+      },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(/encoding\.color\.type/);
+    expect(() => validateChartSpec(spec)).toThrow(/categorical/);
+  });
+
+  it('throws when options.innerRadius is negative', () => {
+    const spec = { ...validPieSpec, options: { innerRadius: -1 } };
+    expect(() => validateChartSpec(spec)).toThrow(/innerRadius/);
+    expect(() => validateChartSpec(spec)).toThrow(/>= 0/);
+  });
+
+  it('throws when options.startAngle is NaN', () => {
+    const spec = { ...validPieSpec, options: { startAngle: Number.NaN } };
+    expect(() => validateChartSpec(spec)).toThrow(/startAngle/);
+    expect(() => validateChartSpec(spec)).toThrow(/finite/);
+  });
+
+  it('throws when options.startAngle is Infinity', () => {
+    const spec = { ...validPieSpec, options: { startAngle: Number.POSITIVE_INFINITY } };
+    expect(() => validateChartSpec(spec)).toThrow(/startAngle/);
+    expect(() => validateChartSpec(spec)).toThrow(/finite/);
+  });
+
+  it('warns (does not throw) when data has a zero value', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spec = {
+      ...validPieSpec,
+      data: [
+        { browser: 'Chrome', share: 60 },
+        { browser: 'Safari', share: 0 },
+        { browser: 'Firefox', share: 40 },
+      ],
+    };
+    expect(() => validateChartSpec(spec)).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/zero value/));
+    warnSpy.mockRestore();
+  });
+
+  it('warns when a value is missing (undefined)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spec = {
+      ...validPieSpec,
+      data: [
+        { browser: 'Chrome', share: 60 },
+        { browser: 'Safari' }, // share missing
+        { browser: 'Firefox', share: 40 },
+      ],
+    };
+    expect(() => validateChartSpec(spec)).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/missing value/));
+    warnSpy.mockRestore();
+  });
+
+  it('throws (shared existence check) when the value field does not exist in data', () => {
+    // The pie validator warns about missing values for the (nonexistent)
+    // field before the shared field-existence check throws — swallow so the
+    // warn does not leak into other describe blocks.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spec = {
+      ...validPieSpec,
+      encoding: { ...validPieSpec.encoding, value: { field: 'nope' } },
+    };
+    expect(() => validateChartSpec(spec)).toThrow(ChartSpecValidationError);
+    expect(() => validateChartSpec(spec)).toThrow(/"nope"/);
+    warnSpy.mockRestore();
+  });
+});
+
+describe('validateChartSpec — pie-only options ignored for non-pie charts', () => {
+  it('does not throw or warn when a line spec sets options.innerRadius / options.startAngle', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spec = {
+      ...validLineSpec,
+      options: { innerRadius: 50, startAngle: Math.PI },
+    };
+    expect(() => validateChartSpec(spec)).not.toThrow();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('does not throw or warn when an area / bar / scatter / heatmap spec sets pie options', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // area
+    expect(() =>
+      validateChartSpec({
+        ...validLineSpec,
+        type: 'area' as const,
+        options: { innerRadius: -99, startAngle: Number.NaN },
+      }),
+    ).not.toThrow();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
 describe('validateChartSpec — forward compatibility', () => {
   const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
