@@ -11,6 +11,7 @@ import { Legend } from '../core/Legend.js';
 import type { ScaleAdapter } from '../core/ScaleAdapter.js';
 import { Tooltip } from '../core/Tooltip.js';
 import { tween } from '../core/animation.js';
+import { computeLayout } from '../core/layout.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 
 import {
@@ -18,7 +19,8 @@ import {
   DOWNSAMPLE_THRESHOLD,
   HIT_TEST_RADIUS_PX,
   buildCartesianHitTester,
-  buildCartesianSetup,
+  buildCartesianScales,
+  buildCartesianSeries,
   formatCartesianTooltip,
   resolveHeight,
   resolveMargin,
@@ -211,14 +213,38 @@ export class LineChart extends Chart {
     const margin = resolveMargin(this.spec);
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
-    const plotWidth = Math.max(0, canvasW - margin.left - margin.right);
-    const plotHeight = Math.max(0, canvasH - margin.top - margin.bottom);
+
+    // Build series first so we know the series count (which decides whether
+    // a categorical legend is needed). Legend dimensions feed back into
+    // layout, which sets the final plot width before scales are built.
+    const series = buildCartesianSeries(this.spec);
+    const showLegend = this.spec.options?.showLegend !== false;
+    const legend =
+      showLegend && series.length >= 2
+        ? new Legend({
+            type: 'categorical',
+            orientation: 'vertical',
+            items: series.map((s) => ({ label: s.name, color: s.color })),
+          })
+        : null;
+
+    const layout = computeLayout({
+      totalWidth: canvasW,
+      totalHeight: canvasH,
+      margin,
+      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+    });
+    const plotWidth = layout.plotRect.width;
+    const plotHeight = layout.plotRect.height;
     this.plotWidth = plotWidth;
     this.plotHeight = plotHeight;
 
-    if (plotWidth <= 0 || plotHeight <= 0) return;
+    if (plotWidth <= 0 || plotHeight <= 0) {
+      legend?.destroy();
+      return;
+    }
 
-    const setup = buildCartesianSetup(this.spec, plotWidth, plotHeight);
+    const setup = buildCartesianScales(this.spec, series, plotWidth, plotHeight);
     this.series = setup.series;
     this.xAdapter = setup.xAdapter;
     this.yAdapter = setup.yAdapter;
@@ -231,7 +257,7 @@ export class LineChart extends Chart {
     // so axis / line / interaction-layer children live in plot-local
     // coordinates (origin at the plot's top-left).
     const plotContainer = new Container();
-    plotContainer.position.set(margin.left, margin.top);
+    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
     stage.addChild(plotContainer);
     this.plotContainer = plotContainer;
 
@@ -253,8 +279,13 @@ export class LineChart extends Chart {
     // clean if a resize redraws.
     this.setupInteractionAndTooltip();
 
-    // Legend in the plot-area top-right, if multi-series.
-    this.maybeBuildLegend();
+    // Legend sits to the right of the plot area (in stage-absolute coords),
+    // not inside the plot container — keeps it from overlapping the marks.
+    if (legend !== null && layout.legendRect !== null) {
+      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+      stage.addChild(legend.container);
+      this.legend = legend;
+    }
 
     this.didInitialRender = true;
   }
@@ -400,26 +431,5 @@ export class LineChart extends Chart {
     const yField = this.spec.encoding.y?.field ?? 'y';
     const xType = this.spec.encoding.x?.type ?? 'quantitative';
     return formatCartesianTooltip(xField, yField, xType, hit);
-  }
-
-  /** @internal */
-  private maybeBuildLegend(): void {
-    if (this.plotContainer === null) return;
-    const showLegend = this.spec.options?.showLegend !== false;
-    if (!showLegend) return;
-    if (this.series.length < 2) return;
-
-    const legend = new Legend({
-      type: 'categorical',
-      orientation: 'vertical',
-      items: this.series.map((s) => ({ label: s.name, color: s.color })),
-    });
-    // Position in the plot-area top-right, padded slightly from the edge.
-    const padding = 8;
-    const x = Math.max(0, this.plotWidth - legend.width - padding);
-    const y = padding;
-    legend.container.position.set(x, y);
-    this.plotContainer.addChild(legend.container);
-    this.legend = legend;
   }
 }

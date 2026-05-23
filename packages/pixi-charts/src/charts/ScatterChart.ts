@@ -22,6 +22,7 @@ import { Legend } from '../core/Legend.js';
 import { linearAdapter, timeAdapter, type ScaleAdapter } from '../core/ScaleAdapter.js';
 import { Tooltip } from '../core/Tooltip.js';
 import { tween } from '../core/animation.js';
+import { computeLayout } from '../core/layout.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 import { SpatialIndex, type SpatialRecord } from '../utils/quadtree.js';
 
@@ -99,7 +100,6 @@ interface ScatterSetup {
   yAxis: Axis<AxisValue>;
   /** Largest rendered radius, for sizing the hit target. */
   maxRadius: number;
-  legend: LegendSpec;
 }
 
 export interface ScatterChartOptions {
@@ -312,20 +312,38 @@ export class ScatterChart extends Chart {
     const margin = resolveMargin(this.spec);
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
-    const plotWidth = Math.max(0, canvasW - margin.left - margin.right);
-    const plotHeight = Math.max(0, canvasH - margin.top - margin.bottom);
+
+    // Build the color resolver + legend spec first — it doesn't depend on
+    // plot dimensions, and the legend's width feeds into layout. Done once
+    // (not duplicated inside buildSetup) so the COLOR_GROUP_WARN_THRESHOLD
+    // warning fires at most once per render.
+    const { colorOf, legend: legendSpec } = this.buildColorResolver();
+    const showLegend = this.spec.options?.showLegend !== false;
+    const legend = showLegend && legendSpec !== null ? this.constructLegend(legendSpec) : null;
+
+    const layout = computeLayout({
+      totalWidth: canvasW,
+      totalHeight: canvasH,
+      margin,
+      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+    });
+    const plotWidth = layout.plotRect.width;
+    const plotHeight = layout.plotRect.height;
     this.plotWidth = plotWidth;
     this.plotHeight = plotHeight;
 
-    if (plotWidth <= 0 || plotHeight <= 0) return;
+    if (plotWidth <= 0 || plotHeight <= 0) {
+      legend?.destroy();
+      return;
+    }
 
-    const setup = this.buildSetup(plotWidth, plotHeight);
+    const setup = this.buildSetup(plotWidth, plotHeight, colorOf);
     this.records = setup.records;
     this.xAxis = setup.xAxis;
     this.yAxis = setup.yAxis;
 
     const plotContainer = new Container();
-    plotContainer.position.set(margin.left, margin.top);
+    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
     stage.addChild(plotContainer);
     this.plotContainer = plotContainer;
 
@@ -342,9 +360,26 @@ export class ScatterChart extends Chart {
     );
 
     this.setupInteractionAndTooltip(setup.maxRadius);
-    this.maybeBuildLegend(setup.legend);
+
+    if (legend !== null && layout.legendRect !== null) {
+      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+      stage.addChild(legend.container);
+      this.legend = legend;
+    }
 
     this.didInitialRender = true;
+  }
+
+  /**
+   * Construct a {@link Legend} from a {@link LegendSpec}. Caller positions
+   * the returned legend and adds it to the stage after layout is computed.
+   *
+   * @internal
+   */
+  private constructLegend(spec: NonNullable<LegendSpec>): Legend {
+    return spec.kind === 'continuous'
+      ? new Legend({ type: 'continuous', scheme: spec.scheme, domain: spec.domain })
+      : new Legend({ type: 'categorical', orientation: 'vertical', items: spec.items });
   }
 
   /**
@@ -362,7 +397,11 @@ export class ScatterChart extends Chart {
    *
    * @internal
    */
-  private buildSetup(plotWidth: number, plotHeight: number): ScatterSetup {
+  private buildSetup(
+    plotWidth: number,
+    plotHeight: number,
+    colorOf: (row: Record<string, unknown>) => number,
+  ): ScatterSetup {
     const enc = this.spec.encoding;
     const xField = enc.x?.field ?? '';
     const yField = enc.y?.field ?? '';
@@ -396,7 +435,6 @@ export class ScatterChart extends Chart {
     );
 
     const radiusOf = this.buildSizeScale();
-    const { colorOf, legend } = this.buildColorResolver();
 
     let maxRadius = 0;
     const records: ScatterRecord[] = rows.map(({ row, xv, yv }) => {
@@ -426,7 +464,7 @@ export class ScatterChart extends Chart {
       gridLength: plotWidth,
     });
 
-    return { records, xAdapter, yAdapter, xAxis, yAxis, maxRadius, legend };
+    return { records, xAdapter, yAdapter, xAxis, yAxis, maxRadius };
   }
 
   /**
@@ -746,31 +784,6 @@ export class ScatterChart extends Chart {
       parts.push(`${enc.size.field}: ${fmt(enc.size.field, 'quantitative')}`);
     }
     return parts.join(' • ');
-  }
-
-  /**
-   * Build the legend from the {@link buildColorResolver} descriptor.
-   * Continuous for quantitative colour (Session 3's `Legend` continuous
-   * mode — first chart to exercise it), categorical otherwise. Top-right of
-   * the plot, same placement as the other charts. A size legend is a
-   * deliberate future addition.
-   *
-   * @internal
-   */
-  private maybeBuildLegend(spec: LegendSpec): void {
-    if (this.plotContainer === null || spec === null) return;
-    if (this.spec.options?.showLegend === false) return;
-
-    const legend =
-      spec.kind === 'continuous'
-        ? new Legend({ type: 'continuous', scheme: spec.scheme, domain: spec.domain })
-        : new Legend({ type: 'categorical', orientation: 'vertical', items: spec.items });
-
-    const padding = 8;
-    const x = Math.max(0, this.plotWidth - legend.width - padding);
-    legend.container.position.set(x, padding);
-    this.plotContainer.addChild(legend.container);
-    this.legend = legend;
   }
 }
 

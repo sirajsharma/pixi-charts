@@ -211,6 +211,106 @@ describe('Legend — continuous construction', () => {
     expect(maxLabel.lastPosition.y).toBe(0);
   });
 
+  // Regression for the `.3~s` default that produced SI-prefixed labels like
+  // "870m" (milli) for plain values. The fix swapped the default to `~g`
+  // (general number, trimmed trailing zeros).
+  describe('default tick format produces plain numbers (no SI suffix)', () => {
+    it.each<[number, number, string, string]>([
+      [0, 100, '0', '100'],
+      [0, 0.5, '0', '0.5'],
+      // d3-format renders the minus sign as U+2212 (Unicode minus), not ASCII '-'.
+      [-50, 50, '−50', '50'],
+      [1000, 100000, '1000', '100000'],
+    ])('domain [%s, %s] → labels "%s" / "%s"', (min, max, minStr, maxStr) => {
+      new Legend({ type: 'continuous', scheme: 'viridis', domain: [min, max] });
+      const texts = MockText.instances.map((t) => t.text);
+      expect(texts).toContain(minStr);
+      expect(texts).toContain(maxStr);
+      // Sanity: no SI suffixes leaked through.
+      for (const t of texts) {
+        expect(t).not.toMatch(/[a-zA-Zµμ]$/);
+      }
+    });
+  });
+
+  // Regression: the gradient bar's pixel rect should not be covered by the
+  // min/max label rects. Computed from anchor + position + mock measurements.
+  describe('continuous labels do not overlap the gradient bar', () => {
+    function rectOf(
+      label: {
+        text: string;
+        lastPosition: { x: number; y: number };
+        width: number;
+        height: number;
+      },
+      anchor: { x: number; y: number },
+    ): { x0: number; y0: number; x1: number; y1: number } {
+      const x0 = label.lastPosition.x - anchor.x * label.width;
+      const y0 = label.lastPosition.y - anchor.y * label.height;
+      return { x0, y0, x1: x0 + label.width, y1: y0 + label.height };
+    }
+
+    function intersects(
+      a: { x0: number; y0: number; x1: number; y1: number },
+      b: { x0: number; y0: number; x1: number; y1: number },
+    ): boolean {
+      return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+    }
+
+    it('horizontal orientation: labels sit below the gradient bar', () => {
+      const length = 160;
+      const thickness = 10;
+      new Legend({
+        type: 'continuous',
+        scheme: 'viridis',
+        domain: [0, 100],
+        orientation: 'horizontal',
+        length,
+        thickness,
+      });
+
+      const barRect = { x0: 0, y0: 0, x1: length, y1: thickness };
+      const minLabel = MockText.instances.find((t) => t.text === '0')!;
+      const maxLabel = MockText.instances.find((t) => t.text === '100')!;
+
+      // Horizontal: min anchor (0,0), max anchor (1,0).
+      const minRect = rectOf(minLabel, { x: 0, y: 0 });
+      const maxRect = rectOf(maxLabel, { x: 1, y: 0 });
+
+      expect(intersects(minRect, barRect)).toBe(false);
+      expect(intersects(maxRect, barRect)).toBe(false);
+      // Labels are below the bar, not above.
+      expect(minRect.y0).toBeGreaterThanOrEqual(thickness);
+      expect(maxRect.y0).toBeGreaterThanOrEqual(thickness);
+    });
+
+    it('vertical orientation: labels sit to the right of the gradient bar', () => {
+      const length = 160;
+      const thickness = 10;
+      new Legend({
+        type: 'continuous',
+        scheme: 'viridis',
+        domain: [0, 100],
+        orientation: 'vertical',
+        length,
+        thickness,
+      });
+
+      const barRect = { x0: 0, y0: 0, x1: thickness, y1: length };
+      const minLabel = MockText.instances.find((t) => t.text === '0')!;
+      const maxLabel = MockText.instances.find((t) => t.text === '100')!;
+
+      // Vertical: min anchor (0,1), max anchor (0,0).
+      const minRect = rectOf(minLabel, { x: 0, y: 1 });
+      const maxRect = rectOf(maxLabel, { x: 0, y: 0 });
+
+      expect(intersects(minRect, barRect)).toBe(false);
+      expect(intersects(maxRect, barRect)).toBe(false);
+      expect(minRect.x0).toBeGreaterThanOrEqual(thickness);
+      expect(maxRect.x0).toBeGreaterThanOrEqual(thickness);
+    });
+  });
+
   it('throws when given an unknown scheme name (propagates ColorScheme guard)', () => {
     expect(() => {
       new Legend({

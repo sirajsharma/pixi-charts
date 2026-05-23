@@ -142,16 +142,25 @@ vi.mock('pixi.js', () => {
       resize: vi.fn((w: number, h: number): void => {
         this.renderer.width = w;
         this.renderer.height = h;
+        this.screen.width = w;
+        this.screen.height = h;
       }),
       width: 800,
       height: 600,
       resolution: 1,
       generateTexture: vi.fn(() => new MockTexture()),
     };
+    screen = { width: 800, height: 600, x: 0, y: 0 };
     ticker = { add: vi.fn(), remove: vi.fn() };
     init = vi.fn(async (opts?: { width?: number; height?: number }): Promise<void> => {
-      if (opts?.width !== undefined) this.renderer.width = opts.width;
-      if (opts?.height !== undefined) this.renderer.height = opts.height;
+      if (opts?.width !== undefined) {
+        this.renderer.width = opts.width;
+        this.screen.width = opts.width;
+      }
+      if (opts?.height !== undefined) {
+        this.renderer.height = opts.height;
+        this.screen.height = opts.height;
+      }
       await Promise.resolve();
     });
     destroy = vi.fn();
@@ -333,14 +342,28 @@ describe('HeatmapChart — init + first render', () => {
     chart.destroy();
   });
 
-  it('stretches the sprite to the plot-area pixel size (canvas minus margins)', async () => {
+  it('stretches the sprite to the plot-area pixel size (canvas minus margins minus legend column)', async () => {
     const chart = new HeatmapChart({
       container: makeContainer(800, 600),
       spec: makeSpec(),
     });
     await chart.init();
     // resolveMargin defaults: top 24, right 24, bottom 40, left 56.
-    // plotWidth = 800 - 56 - 24 = 720; plotHeight = 600 - 24 - 40 = 536.
+    // Full content rect: 800 - 56 - 24 = 720 wide × 600 - 24 - 40 = 536 tall.
+    // Continuous legend (length 160) + 12px gap reduces plot width by 172 →
+    // 720 - 172 = 548. Height is unaffected.
+    const sprite = heatmapSprites()[0]!;
+    expect(sprite.width).toBe(548);
+    expect(sprite.height).toBe(536);
+    chart.destroy();
+  });
+
+  it('with showLegend: false the sprite fills the full content rect (no legend column)', async () => {
+    const chart = new HeatmapChart({
+      container: makeContainer(800, 600),
+      spec: makeSpec({ options: { showLegend: false } }),
+    });
+    await chart.init();
     const sprite = heatmapSprites()[0]!;
     expect(sprite.width).toBe(720);
     expect(sprite.height).toBe(536);

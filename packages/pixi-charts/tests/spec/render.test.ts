@@ -57,10 +57,17 @@ vi.mock('pixi.js', () => {
     canvas = document.createElement('canvas');
     stage = new MockContainer();
     renderer = { resize: vi.fn(), width: 800, height: 600, resolution: 1 };
+    screen = { width: 800, height: 600, x: 0, y: 0 };
     ticker = { add: vi.fn(), remove: vi.fn() };
     init = vi.fn(async (opts?: { width?: number; height?: number }) => {
-      if (opts?.width !== undefined) this.renderer.width = opts.width;
-      if (opts?.height !== undefined) this.renderer.height = opts.height;
+      if (opts?.width !== undefined) {
+        this.renderer.width = opts.width;
+        this.screen.width = opts.width;
+      }
+      if (opts?.height !== undefined) {
+        this.renderer.height = opts.height;
+        this.screen.height = opts.height;
+      }
       await Promise.resolve();
     });
     destroy = vi.fn();

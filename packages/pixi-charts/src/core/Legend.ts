@@ -27,7 +27,19 @@ const DEFAULT_FONT_FAMILY = 'sans-serif';
 const DEFAULT_LABEL_COLOR = 0x333333;
 const DEFAULT_GRADIENT_LENGTH = 160;
 const DEFAULT_GRADIENT_THICKNESS = 10;
-const DEFAULT_TICK_FORMAT_SPECIFIER = '.3~s';
+/**
+ * Default `d3-format` specifier for continuous-legend min/max labels.
+ *
+ * `~g` = general number format with trimmed trailing zeros. Produces plain
+ * numbers a human would read directly across the common ranges (0–1, 0–100,
+ * 1k–100k, etc.) without surprise SI-prefix suffixes. The previous default
+ * `.3~s` applied SI prefixes which turned values like `0.870` into `"870m"`
+ * (milli) — readable to engineers, misleading to most chart consumers.
+ *
+ * Override via `ContinuousLegendOptions.tickFormat` for domain-specific
+ * formats (currency, dates-as-numbers, etc.).
+ */
+const DEFAULT_TICK_FORMAT_SPECIFIER = '~g';
 
 /** One entry in a categorical legend: a label and the swatch color to draw next to it. */
 export interface CategoricalLegendItem {
@@ -69,7 +81,7 @@ export interface ContinuousLegendOptions {
   thickness?: number;
   /** Layout direction. Default `'horizontal'`. */
   orientation?: 'horizontal' | 'vertical';
-  /** Formatter for the min/max labels. Default `format('.3~s')` from `d3-format`. */
+  /** Formatter for the min/max labels. Default `format('~g')` from `d3-format` (plain numbers, trimmed trailing zeros — no SI suffixes). */
   tickFormat?: (value: number) => string;
   /** Label font size in CSS pixels. Default `11`. */
   fontSize?: number;

@@ -130,18 +130,30 @@ vi.mock('pixi.js', () => {
     canvas: HTMLCanvasElement = document.createElement('canvas');
     stage: MockContainer = new MockContainer();
     renderer = {
-      resize: vi.fn((_w: number, _h: number) => undefined),
+      resize: vi.fn((w: number, h: number) => {
+        this.renderer.width = w;
+        this.renderer.height = h;
+        this.screen.width = w;
+        this.screen.height = h;
+      }),
       width: 800,
       height: 600,
       resolution: 1,
     };
+    screen = { width: 800, height: 600, x: 0, y: 0 };
     ticker = {
       add: vi.fn(),
       remove: vi.fn(),
     };
     init = vi.fn(async (opts?: { width?: number; height?: number }): Promise<void> => {
-      if (opts?.width !== undefined) this.renderer.width = opts.width;
-      if (opts?.height !== undefined) this.renderer.height = opts.height;
+      if (opts?.width !== undefined) {
+        this.renderer.width = opts.width;
+        this.screen.width = opts.width;
+      }
+      if (opts?.height !== undefined) {
+        this.renderer.height = opts.height;
+        this.screen.height = opts.height;
+      }
       await Promise.resolve();
     });
     destroy = vi.fn();
@@ -217,9 +229,18 @@ function makeSpec(overrides: Partial<ChartSpec> = {}): ChartSpec {
 
 /** The single bars Graphics is the one that received `rect()` calls. */
 function barsGfx(): MockGfx {
-  const g = MockGraphics.gInstances.find((x) => x.rectCalls.length > 0);
-  if (g === undefined) throw new Error('no bars graphics found');
-  return g;
+  // Bars all share ONE Graphics with N rect calls (one per bar). Legend
+  // swatches use ONE Graphics per swatch (single rect each), so we pick the
+  // Graphics with the most rectCalls to skip past legend swatches that now
+  // get constructed before bars in the render pipeline.
+  let best: MockGfx | undefined;
+  for (const g of MockGraphics.gInstances) {
+    if (best === undefined || g.rectCalls.length > best.rectCalls.length) best = g;
+  }
+  if (best === undefined || best.rectCalls.length === 0) {
+    throw new Error('no bars graphics found');
+  }
+  return best;
 }
 
 beforeEach(() => {

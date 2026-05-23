@@ -16,6 +16,7 @@ import { Legend } from '../core/Legend.js';
 import { bandAdapter, linearAdapter, type ScaleAdapter } from '../core/ScaleAdapter.js';
 import { Tooltip } from '../core/Tooltip.js';
 import { tween } from '../core/animation.js';
+import { computeLayout } from '../core/layout.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 
 import {
@@ -138,7 +139,6 @@ export class BarChart extends Chart {
   private tooltip: Tooltip | null = null;
   private interactionLayer: InteractionLayer<BarRecord> | null = null;
   private legend: Legend | null = null;
-  private legendItems: ColorLegendItem[] | null = null;
   /** Tracks whether the first render has happened (resize skips the enter animation). */
   private didInitialRender = false;
 
@@ -234,12 +234,32 @@ export class BarChart extends Chart {
     const margin = resolveMargin(this.spec);
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
-    const plotWidth = Math.max(0, canvasW - margin.left - margin.right);
-    const plotHeight = Math.max(0, canvasH - margin.top - margin.bottom);
+
+    // Legend items are derived from the color encoding alone — independent of
+    // plot pixel dimensions — so we can size the legend before computing the
+    // final plot rect (which the legend's width feeds into).
+    const legendItems = this.computeLegendItems();
+    const showLegend = this.spec.options?.showLegend !== false;
+    const legend =
+      showLegend && legendItems !== null && legendItems.length > 0
+        ? new Legend({ type: 'categorical', orientation: 'vertical', items: legendItems })
+        : null;
+
+    const layout = computeLayout({
+      totalWidth: canvasW,
+      totalHeight: canvasH,
+      margin,
+      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+    });
+    const plotWidth = layout.plotRect.width;
+    const plotHeight = layout.plotRect.height;
     this.plotWidth = plotWidth;
     this.plotHeight = plotHeight;
 
-    if (plotWidth <= 0 || plotHeight <= 0) return;
+    if (plotWidth <= 0 || plotHeight <= 0) {
+      legend?.destroy();
+      return;
+    }
 
     const setup = this.buildSetup(plotWidth, plotHeight);
     this.records = setup.records;
@@ -247,10 +267,9 @@ export class BarChart extends Chart {
     this.valueAdapter = setup.valueAdapter;
     this.xAxis = setup.xAxis;
     this.yAxis = setup.yAxis;
-    this.legendItems = setup.legendItems;
 
     const plotContainer = new Container();
-    plotContainer.position.set(margin.left, margin.top);
+    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
     stage.addChild(plotContainer);
     this.plotContainer = plotContainer;
 
@@ -264,9 +283,43 @@ export class BarChart extends Chart {
 
     this.drawBars();
     this.setupInteractionAndTooltip();
-    this.maybeBuildLegend();
+
+    if (legend !== null && layout.legendRect !== null) {
+      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+      stage.addChild(legend.container);
+      this.legend = legend;
+    }
 
     this.didInitialRender = true;
+  }
+
+  /**
+   * Enumerate categorical legend items from the spec's color encoding
+   * without touching the plot dimensions. Mirrors the distinct-color-value
+   * computation inside {@link buildSetup} so the legend can be measured
+   * before layout commits to a plot width. `null` when no legend should
+   * render (no color field, fewer than 2 distinct values).
+   *
+   * @internal
+   */
+  private computeLegendItems(): ColorLegendItem[] | null {
+    const colorField = this.spec.encoding.color?.field;
+    if (colorField === undefined) return null;
+    const scheme =
+      (this.spec.encoding.color?.scheme as CategoricalSchemeName | undefined) ??
+      DEFAULT_COLOR_SCHEME;
+
+    const seen = new Set<string>();
+    const order: string[] = [];
+    for (const row of this.spec.data) {
+      const key = stringifyKey(row[colorField]);
+      if (!seen.has(key)) {
+        seen.add(key);
+        order.push(key);
+      }
+    }
+    if (order.length < 2) return null;
+    return order.map((label, i) => ({ label, color: getCategoricalColor(scheme, i) }));
   }
 
   /**
@@ -548,33 +601,6 @@ export class BarChart extends Chart {
     const valueField =
       this.orientation === 'horizontal' ? (enc.x?.field ?? 'value') : (enc.y?.field ?? 'value');
     return formatCategoryValueTooltip(categoryField, record.category, valueField, record.value);
-  }
-
-  /**
-   * Build the legend when a categorical color encoding distinguishes bars.
-   * Positioned in the plot-area top-right, same as Line/Area. A single-
-   * series bar chart with no color encoding (or a color field with one
-   * distinct value) shows no legend.
-   *
-   * @internal
-   */
-  private maybeBuildLegend(): void {
-    if (this.plotContainer === null) return;
-    if (this.spec.options?.showLegend === false) return;
-    const items = this.legendItems;
-    if (items === null || items.length === 0) return;
-
-    const legend = new Legend({
-      type: 'categorical',
-      orientation: 'vertical',
-      items,
-    });
-    const padding = 8;
-    const x = Math.max(0, this.plotWidth - legend.width - padding);
-    const y = padding;
-    legend.container.position.set(x, y);
-    this.plotContainer.addChild(legend.container);
-    this.legend = legend;
   }
 }
 

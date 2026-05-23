@@ -12,6 +12,7 @@ import {
 import { Legend } from '../core/Legend.js';
 import { Tooltip } from '../core/Tooltip.js';
 import { tween } from '../core/animation.js';
+import { computeLayout } from '../core/layout.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 import { angleInRange, pointInRing, pointToAngle } from '../utils/geometry.js';
 
@@ -238,19 +239,40 @@ export class PieChart extends Chart {
     };
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
-    const plotWidth = Math.max(0, canvasW - margin.left - margin.right);
-    const plotHeight = Math.max(0, canvasH - margin.top - margin.bottom);
+
+    // Slices first → legend (when ≥2 slices) → layout → geometry. Donut
+    // radius depends on the legend-reduced plot rect, so this ordering keeps
+    // the ring from being squashed behind a legend overlap.
+    const slices = this.buildSlices();
+    this.slices = slices;
+    this.legendItems =
+      slices.length >= 2 ? slices.map((s) => ({ label: s.category, color: s.color })) : null;
+
+    const showLegend = this.spec.options?.showLegend !== false;
+    const legend =
+      showLegend && this.legendItems !== null && this.legendItems.length > 0
+        ? new Legend({
+            type: 'categorical',
+            orientation: 'vertical',
+            items: this.legendItems,
+          })
+        : null;
+
+    const layout = computeLayout({
+      totalWidth: canvasW,
+      totalHeight: canvasH,
+      margin,
+      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+    });
+    const plotWidth = layout.plotRect.width;
+    const plotHeight = layout.plotRect.height;
     this.plotWidth = plotWidth;
     this.plotHeight = plotHeight;
 
-    if (plotWidth <= 0 || plotHeight <= 0) return;
-
-    const slices = this.buildSlices();
-    this.slices = slices;
-    // Build the legend item list eagerly — a single-slice pie suppresses the
-    // legend (nothing to disambiguate), matching BarChart's threshold.
-    this.legendItems =
-      slices.length >= 2 ? slices.map((s) => ({ label: s.category, color: s.color })) : null;
+    if (plotWidth <= 0 || plotHeight <= 0) {
+      legend?.destroy();
+      return;
+    }
 
     // Geometry.
     this.centerX = plotWidth / 2;
@@ -259,13 +281,14 @@ export class PieChart extends Chart {
     this.innerRadius = Math.max(0, Math.min(this.innerRadiusOpt, this.outerRadius - 1));
 
     const plotContainer = new Container();
-    plotContainer.position.set(margin.left, margin.top);
+    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
     stage.addChild(plotContainer);
     this.plotContainer = plotContainer;
 
     if (slices.length === 0) {
       // Zero-total case (validator warns at parse time; here we just
       // short-circuit cleanly with no graphics / interaction).
+      legend?.destroy();
       this.didInitialRender = true;
       return;
     }
@@ -276,7 +299,12 @@ export class PieChart extends Chart {
 
     this.drawSlices();
     this.setupInteractionAndTooltip();
-    this.maybeBuildLegend();
+
+    if (legend !== null && layout.legendRect !== null) {
+      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+      stage.addChild(legend.container);
+      this.legend = legend;
+    }
 
     this.didInitialRender = true;
   }
@@ -503,33 +531,6 @@ export class PieChart extends Chart {
       `${categoryField}: ${slice.category} • ` +
       `${valueField}: ${formatValue(slice.value)} (${formatPercent(slice.percent)})`
     );
-  }
-
-  /**
-   * Build the legend when the pie has 2+ slices. Positioned in the
-   * plot-area top-right corner — same convention as Line/Area/Bar/Scatter,
-   * though pies have no axis next to it so it sits over otherwise-empty
-   * space.
-   *
-   * @internal
-   */
-  private maybeBuildLegend(): void {
-    if (this.plotContainer === null) return;
-    if (this.spec.options?.showLegend === false) return;
-    const items = this.legendItems;
-    if (items === null || items.length === 0) return;
-
-    const legend = new Legend({
-      type: 'categorical',
-      orientation: 'vertical',
-      items,
-    });
-    const padding = 8;
-    const x = Math.max(0, this.plotWidth - legend.width - padding);
-    const y = padding;
-    legend.container.position.set(x, y);
-    this.plotContainer.addChild(legend.container);
-    this.legend = legend;
   }
 }
 

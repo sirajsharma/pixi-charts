@@ -147,18 +147,30 @@ vi.mock('pixi.js', () => {
     canvas: HTMLCanvasElement = document.createElement('canvas');
     stage: MockContainer = new MockContainer();
     renderer = {
-      resize: vi.fn((_w: number, _h: number) => undefined),
+      resize: vi.fn((w: number, h: number) => {
+        this.renderer.width = w;
+        this.renderer.height = h;
+        this.screen.width = w;
+        this.screen.height = h;
+      }),
       width: 800,
       height: 600,
       resolution: 1,
     };
+    screen = { width: 800, height: 600, x: 0, y: 0 };
     ticker = {
       add: vi.fn(),
       remove: vi.fn(),
     };
     init = vi.fn(async (opts?: { width?: number; height?: number }): Promise<void> => {
-      if (opts?.width !== undefined) this.renderer.width = opts.width;
-      if (opts?.height !== undefined) this.renderer.height = opts.height;
+      if (opts?.width !== undefined) {
+        this.renderer.width = opts.width;
+        this.screen.width = opts.width;
+      }
+      if (opts?.height !== undefined) {
+        this.renderer.height = opts.height;
+        this.screen.height = opts.height;
+      }
       await Promise.resolve();
     });
     destroy = vi.fn();
@@ -200,10 +212,18 @@ const MockApp = Application as unknown as { instances: MockApp[] };
 const MockGraphicsCls = Graphics as unknown as { gInstances: MockGfx[] };
 const MockSpriteCls = Sprite as unknown as { sInstances: MockSpriteT[] };
 
-// Container 800×600, pie margins {16,16,16,16} → plot 768 × 568.
+// Container 800×600, pie margins {16,16,16,16}. The legend (added when ≥2
+// slices) sits to the right of the plot and reduces plotWidth by
+// `legend.width + legendGap`. With the mock Text.width = 30 and the
+// categorical default of swatch(12) + spacing(6) + label(30) = 48, plus the
+// 12px gap, the plot loses 60px of width. Single-slice tests would see
+// PLOT_W_NO_LEGEND instead.
 const CONTAINER_W = 800;
 const CONTAINER_H = 600;
-const PLOT_W = CONTAINER_W - 32;
+const MOCK_LEGEND_WIDTH = 12 + 6 + 30; // swatchSize + spacing + Text.width
+const LEGEND_GAP = 12;
+const PLOT_W = CONTAINER_W - 32 - MOCK_LEGEND_WIDTH - LEGEND_GAP;
+const PLOT_W_NO_LEGEND = CONTAINER_W - 32;
 const PLOT_H = CONTAINER_H - 32;
 const TWO_PI = Math.PI * 2;
 
@@ -504,6 +524,19 @@ describe('PieChart — interaction layer', () => {
     // The interaction sprite is the only Sprite the chart creates.
     expect(MockSpriteCls.sInstances).toHaveLength(1);
     expect(MockSpriteCls.sInstances[0]!.width).toBe(PLOT_W);
+    expect(MockSpriteCls.sInstances[0]!.height).toBe(PLOT_H);
+    chart.destroy();
+  });
+
+  it('with showLegend: false the plot fills the full content rect (no legend column)', async () => {
+    const container = makeContainer();
+    const chart = new PieChart({
+      container,
+      spec: makeSpec({ options: { showLegend: false } }),
+    });
+    await chart.init();
+    expect(MockSpriteCls.sInstances).toHaveLength(1);
+    expect(MockSpriteCls.sInstances[0]!.width).toBe(PLOT_W_NO_LEGEND);
     expect(MockSpriteCls.sInstances[0]!.height).toBe(PLOT_H);
     chart.destroy();
   });

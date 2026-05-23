@@ -120,16 +120,25 @@ vi.mock('pixi.js', () => {
       resize: vi.fn((w: number, h: number): void => {
         this.renderer.width = w;
         this.renderer.height = h;
+        this.screen.width = w;
+        this.screen.height = h;
       }),
       width: 800,
       height: 600,
       resolution: 1,
       generateTexture: vi.fn(() => new MockTexture()),
     };
+    screen = { width: 800, height: 600, x: 0, y: 0 };
     ticker = { add: vi.fn(), remove: vi.fn() };
     init = vi.fn(async (o?: { width?: number; height?: number }): Promise<void> => {
-      if (o?.width !== undefined) this.renderer.width = o.width;
-      if (o?.height !== undefined) this.renderer.height = o.height;
+      if (o?.width !== undefined) {
+        this.renderer.width = o.width;
+        this.screen.width = o.width;
+      }
+      if (o?.height !== undefined) {
+        this.renderer.height = o.height;
+        this.screen.height = o.height;
+      }
       await Promise.resolve();
     });
     destroy = vi.fn();

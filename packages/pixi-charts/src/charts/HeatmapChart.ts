@@ -15,6 +15,7 @@ import {
 import { Legend } from '../core/Legend.js';
 import { bandAdapter, type ScaleAdapter } from '../core/ScaleAdapter.js';
 import { Tooltip } from '../core/Tooltip.js';
+import { computeLayout } from '../core/layout.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 
 import { resolveHeight, resolveMargin, resolveWidth, toNumber } from './_shared/cartesian.js';
@@ -292,12 +293,6 @@ export class HeatmapChart extends Chart {
     const margin = resolveMargin(this.spec);
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
-    const plotWidth = Math.max(0, canvasW - margin.left - margin.right);
-    const plotHeight = Math.max(0, canvasH - margin.top - margin.bottom);
-    this.plotWidth = plotWidth;
-    this.plotHeight = plotHeight;
-
-    if (plotWidth <= 0 || plotHeight <= 0) return;
 
     const enc = this.spec.encoding;
     const xField = enc.x?.field ?? '';
@@ -309,7 +304,9 @@ export class HeatmapChart extends Chart {
         : DEFAULT_SCHEME;
 
     // Build cells, categories (insertion order), and the value extent in a
-    // single pass over data — three traversals here would be wasteful.
+    // single pass over data — three traversals here would be wasteful. None
+    // of this depends on plot pixel dimensions, so we can do it before
+    // layout commits to a plot width (legend reduces width when present).
     const xCategories: string[] = [];
     const yCategories: string[] = [];
     const xSeen = new Set<string>();
@@ -344,6 +341,29 @@ export class HeatmapChart extends Chart {
     const maxValue = maxRaw ?? 1;
     const span = maxValue - minValue;
     const normalize = (n: number): number => (span === 0 ? 0.5 : (n - minValue) / span);
+
+    // Build the continuous legend (one per chart) before layout so its width
+    // can reduce the plot. Skipped when the consumer opts out.
+    const showLegend = this.spec.options?.showLegend !== false;
+    const legend = showLegend
+      ? new Legend({ type: 'continuous', scheme: colorScheme, domain: [minValue, maxValue] })
+      : null;
+
+    const layout = computeLayout({
+      totalWidth: canvasW,
+      totalHeight: canvasH,
+      margin,
+      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+    });
+    const plotWidth = layout.plotRect.width;
+    const plotHeight = layout.plotRect.height;
+    this.plotWidth = plotWidth;
+    this.plotHeight = plotHeight;
+
+    if (plotWidth <= 0 || plotHeight <= 0) {
+      legend?.destroy();
+      return;
+    }
 
     // Build the cell map and resolve colours.
     const cellMap = new Map<string, Map<string, HeatmapCell>>();
@@ -395,7 +415,7 @@ export class HeatmapChart extends Chart {
 
     // Plot container + axis attachment (same layout the other charts use).
     const plotContainer = new Container();
-    plotContainer.position.set(margin.left, margin.top);
+    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
     stage.addChild(plotContainer);
     this.plotContainer = plotContainer;
 
@@ -416,7 +436,12 @@ export class HeatmapChart extends Chart {
     }
 
     this.setupInteractionAndTooltip();
-    this.maybeBuildLegend(colorScheme, minValue, maxValue);
+
+    if (legend !== null && layout.legendRect !== null) {
+      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+      stage.addChild(legend.container);
+      this.legend = legend;
+    }
   }
 
   /**
@@ -546,23 +571,6 @@ export class HeatmapChart extends Chart {
     const valueField = enc.value?.field ?? 'value';
     const valueStr = d3format(VALUE_TOOLTIP_FORMAT)(cell.value);
     return `${xField}: ${cell.xCategory} • ${yField}: ${cell.yCategory} • ${valueField}: ${valueStr}`;
-  }
-
-  /** @internal */
-  private maybeBuildLegend(scheme: SequentialSchemeName, minValue: number, maxValue: number): void {
-    if (this.plotContainer === null) return;
-    if (this.spec.options?.showLegend === false) return;
-
-    const legend = new Legend({
-      type: 'continuous',
-      scheme,
-      domain: [minValue, maxValue],
-    });
-    const padding = 8;
-    const x = Math.max(0, this.plotWidth - legend.width - padding);
-    legend.container.position.set(x, padding);
-    this.plotContainer.addChild(legend.container);
-    this.legend = legend;
   }
 }
 

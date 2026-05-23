@@ -122,8 +122,33 @@ export function buildCartesianSetup(
   plotWidth: number,
   plotHeight: number,
 ): CartesianSetup {
+  const series = buildCartesianSeries(spec);
+  return buildCartesianScales(spec, series, plotWidth, plotHeight);
+}
+
+/**
+ * Series-only step of {@link buildCartesianSetup}: group data, sort, downsample,
+ * and assign categorical colors. Exposed so a chart can determine its series
+ * count (and therefore whether a legend is needed) before knowing the final
+ * plot dimensions — relevant because the legend reduces plot width.
+ */
+export function buildCartesianSeries(spec: ChartSpec): CartesianSeries[] {
+  return buildSeries(spec);
+}
+
+/**
+ * Scales + axes step of {@link buildCartesianSetup}: build x/y adapters and
+ * {@link Axis} instances against the supplied plot dimensions. Pair with
+ * {@link buildCartesianSeries} when the chart needs to size the legend
+ * before committing to a plot width.
+ */
+export function buildCartesianScales(
+  spec: ChartSpec,
+  series: CartesianSeries[],
+  plotWidth: number,
+  plotHeight: number,
+): CartesianSetup {
   const xType = spec.encoding.x?.type ?? 'quantitative';
-  const series = buildSeries(spec);
   const { xAdapter, xAxis } = buildXAxis(series, xType, plotWidth);
   const { yAdapter, yAxis } = buildYAxis(series, plotWidth, plotHeight);
   return { series, xAdapter, yAdapter, xAxis, yAxis, plotWidth, plotHeight };
