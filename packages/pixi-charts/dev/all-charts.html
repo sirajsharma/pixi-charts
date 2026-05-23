@@ -1,0 +1,196 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>pixi-charts — verification harness</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        margin: 0;
+        padding: 20px;
+        color: #222;
+        background: #f0f0f0;
+      }
+      header {
+        margin-bottom: 20px;
+      }
+      header h1 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0 0 6px;
+      }
+      header p {
+        font-size: 13px;
+        color: #555;
+        margin: 0 0 4px;
+      }
+      #load-time {
+        font-size: 13px;
+        color: #888;
+        font-variant-numeric: tabular-nums;
+        font-style: italic;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 480px);
+        gap: 16px;
+      }
+      @media (max-width: 1520px) {
+        .grid { grid-template-columns: repeat(2, 480px); }
+      }
+      @media (max-width: 1020px) {
+        .grid { grid-template-columns: 480px; }
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #ccc;
+      }
+      .card-title {
+        font-size: 12px;
+        font-weight: 600;
+        padding: 7px 10px 6px;
+        border-bottom: 1px solid #e0e0e0;
+        color: #333;
+        background: #fafafa;
+      }
+      .chart-container {
+        width: 480px;
+        height: 300px;
+        display: block;
+      }
+      .card-note {
+        font-size: 11px;
+        color: #999;
+        padding: 4px 10px 6px;
+        border-top: 1px solid #e8e8e8;
+      }
+      footer {
+        margin-top: 28px;
+        font-size: 13px;
+        color: #555;
+        max-width: 700px;
+      }
+      footer h2 {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 0 0 6px;
+        color: #333;
+      }
+      footer ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+      footer li {
+        margin-bottom: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Verification Harness — all six chart types</h1>
+      <p>
+        Renders all chart types side by side for visual consistency checking, cross-chart regression
+        review, and quick QA after primitive-layer changes. Internal tool; not for end-user use.
+      </p>
+      <p id="load-time">Load time will appear here once charts render.</p>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">Line Chart</div>
+        <div id="chart-line" class="chart-container"></div>
+        <div class="card-note">200 pts · time-series · sine wave + noise</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Area Chart</div>
+        <div id="chart-area" class="chart-container"></div>
+        <div class="card-note">200 pts × 3 series · overlap alpha visible</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Bar Chart</div>
+        <div id="chart-bar" class="chart-container"></div>
+        <div class="card-note">8 months · vertical · one small + one large bar</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Scatter Chart</div>
+        <div id="chart-scatter" class="chart-container"></div>
+        <div class="card-note">5,000 pts · viridis color · variable point size</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Heatmap Chart</div>
+        <div id="chart-heatmap" class="chart-container"></div>
+        <div class="card-note">24 h × 7 days · simulated business activity</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Pie Chart (donut)</div>
+        <div id="chart-pie" class="chart-container"></div>
+        <div class="card-note">6 slices · market-share style · innerRadius: 60</div>
+      </div>
+    </div>
+
+    <footer>
+      <h2>Verification checklist</h2>
+      <ul>
+        <li>
+          <strong>Visual</strong> — same font, same axis style, consistent colors across charts
+          where applicable; no obviously mismatched typographic scale.
+        </li>
+        <li>
+          <strong>Hover</strong> — tooltip works on every chart, shows correctly formatted values
+          and the right field names.
+        </li>
+        <li>
+          <strong>Animation</strong> — each chart's enter animation runs once on initial load;
+          hard-reload to re-observe.
+        </li>
+        <li>
+          <strong>Resize</strong> — drag the browser window; every chart resizes cleanly with no
+          clipping, overflow, or axis misalignment.
+        </li>
+        <li>
+          <strong>Console</strong> — no errors, no unexpected warnings (deliberate soft-warns about
+          data omissions are acceptable).
+        </li>
+        <li>
+          <strong>Memory</strong> — hot-reload several times; DevTools Memory tab should not show
+          steady growth between reloads.
+        </li>
+      </ul>
+    </footer>
+
+    <!--
+      Import map: resolves bare specifiers used by dist/index.js.
+      Required because the library bundle externalises pixi.js, d3-*, and zod.
+
+      pixi.js → local node_modules (dist/pixi.mjs is fully self-contained, no
+        external deps). Server must be rooted at packages/pixi-charts/.
+        Run: npx serve packages/pixi-charts then open /dev/all-charts.html.
+
+      d3-* + zod → esm.sh CDN. The d3 packages have transitive deps
+        (d3-interpolate, d3-path, d3-time, internmap) that live in pnpm's
+        virtual store and can't be easily served locally. esm.sh bundles each
+        package with its deps. Internet access required for first load; the
+        browser caches responses after that.
+    -->
+    <script type="importmap">
+    {
+      "imports": {
+        "pixi.js":            "/node_modules/pixi.js/dist/pixi.mjs",
+        "d3-array":           "https://esm.sh/d3-array@3.2.4?bundle",
+        "d3-color":           "https://esm.sh/d3-color@3.1.0?bundle",
+        "d3-format":          "https://esm.sh/d3-format@3.1.0?bundle",
+        "d3-quadtree":        "https://esm.sh/d3-quadtree@3.0.1?bundle",
+        "d3-scale":           "https://esm.sh/d3-scale@4.0.2?bundle",
+        "d3-scale-chromatic": "https://esm.sh/d3-scale-chromatic@3.1.0?bundle",
+        "d3-shape":           "https://esm.sh/d3-shape@3.2.0?bundle",
+        "d3-time-format":     "https://esm.sh/d3-time-format@4.1.0?bundle",
+        "zod":                "https://esm.sh/zod@3.23.8?bundle"
+      }
+    }
+    </script>
+    <script type="module" src="all-charts.js"></script>
+  </body>
+</html>
