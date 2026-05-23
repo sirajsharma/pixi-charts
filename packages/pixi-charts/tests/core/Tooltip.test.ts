@@ -53,6 +53,29 @@ describe('Tooltip — construction', () => {
   });
 });
 
+describe('Tooltip — positioning context', () => {
+  it('promotes a position: static parent to position: relative', () => {
+    const container = makeContainer();
+    // Sanity: parent has no explicit positioning.
+    expect(container.style.position === '' || container.style.position === 'static').toBe(true);
+
+    new Tooltip({ container });
+
+    expect(container.style.position).toBe('relative');
+  });
+
+  it('leaves a non-static parent alone', () => {
+    for (const pos of ['relative', 'absolute', 'fixed', 'sticky'] as const) {
+      const container = makeContainer();
+      container.style.position = pos;
+
+      new Tooltip({ container });
+
+      expect(container.style.position).toBe(pos);
+    }
+  });
+});
+
 describe('Tooltip — show()', () => {
   it('makes the tooltip visible and positions it', () => {
     const container = makeContainer(400, 300);

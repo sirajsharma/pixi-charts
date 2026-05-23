@@ -51,6 +51,20 @@ export class Tooltip {
   constructor(opts: TooltipOptions) {
     this.container = opts.container;
 
+    // The tooltip element uses `position: absolute`, which resolves against
+    // the nearest *positioned* ancestor — not the DOM parent. If the
+    // container is `static` (the default), the tooltip would anchor to some
+    // higher ancestor (often `<body>`) and appear far from the chart. Promote
+    // a static container to `relative`; `relative` has no visual side effect
+    // on the container's own layout. If the container is already positioned
+    // (relative/absolute/fixed/sticky), leave it alone.
+    if (typeof window !== 'undefined') {
+      const computed = window.getComputedStyle(this.container).position;
+      if (computed === '' || computed === 'static') {
+        this.container.style.position = 'relative';
+      }
+    }
+
     const el = document.createElement('div');
     const s = el.style;
     s.position = 'absolute';
