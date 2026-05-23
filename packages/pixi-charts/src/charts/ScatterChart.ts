@@ -310,8 +310,8 @@ export class ScatterChart extends Chart {
     }
 
     const margin = resolveMargin(this.spec);
-    const canvasW = this.app.renderer.width / this.app.renderer.resolution;
-    const canvasH = this.app.renderer.height / this.app.renderer.resolution;
+    const canvasW = this.app.screen.width;
+    const canvasH = this.app.screen.height;
     const plotWidth = Math.max(0, canvasW - margin.left - margin.right);
     const plotHeight = Math.max(0, canvasH - margin.top - margin.bottom);
     this.plotWidth = plotWidth;
