@@ -2,7 +2,7 @@ import { extent } from 'd3-array';
 import { format as d3format } from 'd3-format';
 import { scaleLinear, scaleSqrt, scaleTime } from 'd3-scale';
 import { timeFormat } from 'd3-time-format';
-import { Container, Graphics, Particle, ParticleContainer, type Texture } from 'pixi.js';
+import { Container, Graphics, Particle, ParticleContainer, Sprite, type Texture } from 'pixi.js';
 
 import { Axis } from '../core/Axis.js';
 import { Chart } from '../core/Chart.js';
@@ -62,6 +62,15 @@ const MIN_HIT_RADIUS = 12;
 const DEFAULT_SEQUENTIAL_SCHEME: SequentialSchemeName = 'viridis';
 /** Default categorical scheme (matches the rest of the library). */
 const DEFAULT_CATEGORICAL_SCHEME: CategoricalSchemeName = 'category10';
+
+/** Duration (ms) of hover decoration fade/scale-in / fade/scale-out. */
+const HOVER_ANIMATION_MS = 120;
+/**
+ * Scale multiplier applied to the hover overlay relative to the hovered
+ * point's data-driven radius. 1.5× reads as a clear "enlarge" without
+ * occluding neighbouring points.
+ */
+const HOVER_SCALE_MULTIPLIER = 1.5;
 
 /** Scatter's positional axis value: a continuous number or a Date. */
 type AxisValue = number | Date;
@@ -194,6 +203,18 @@ export class ScatterChart extends Chart {
   private tooltip: Tooltip | null = null;
   private interactionLayer: InteractionLayer<ScatterRecord> | null = null;
   private legend: Legend | null = null;
+  /**
+   * Hover decoration — a single overlay {@link Sprite} sharing the particle
+   * texture, drawn above the {@link ParticleContainer}. We use an overlay
+   * instead of mutating a particle's `scaleX/Y` because the container is
+   * constructed with `dynamicProperties.scale: false` (see
+   * {@link syncParticles}); a per-frame scale animation on a particle would
+   * force a full static-buffer re-upload every frame for the entire cloud.
+   * The overlay is a regular Sprite with no upload cost, and it visually
+   * covers the small particle underneath when scaled up.
+   */
+  private hoverOverlay: Sprite | null = null;
+  private hoverAnimationCancel: (() => void) | null = null;
   /** First render done? Resize passes skip the fade-in. */
   private didInitialRender = false;
 
@@ -284,6 +305,12 @@ export class ScatterChart extends Chart {
     // because the mock ResizeObserver never auto-fires.)
     this.cancelAllTweens();
 
+    // The hover overlay was a child of the old plotContainer (about to be
+    // destroyed). Drop our reference so the next hover starts fresh;
+    // cancelAllTweens() above has already invalidated any in-flight fade.
+    this.hoverOverlay = null;
+    this.hoverAnimationCancel = null;
+
     if (this.plotContainer !== null) {
       // Rescue the persistent ParticleContainer before destroying the plot —
       // `{ children: true }` would otherwise free it (and crash a queued
@@ -352,6 +379,19 @@ export class ScatterChart extends Chart {
     plotContainer.addChild(this.xAxis.container);
 
     this.syncParticles();
+
+    // Hover overlay: a single Sprite over the persistent ParticleContainer,
+    // reusing the shared point texture. Sits above the particles so the
+    // hovered point's enlarged version is fully visible. Created after
+    // syncParticles() so the texture is guaranteed to exist.
+    if (this.pointTexture !== null) {
+      const overlay = new Sprite(this.pointTexture);
+      overlay.anchor.set(0.5);
+      overlay.alpha = 0;
+      overlay.scale.set(0);
+      plotContainer.addChild(overlay);
+      this.hoverOverlay = overlay;
+    }
 
     // Spatial index over the SAME pixel-space records used for drawing —
     // built once here, reused for every pointer event (never per-frame).
@@ -730,6 +770,9 @@ export class ScatterChart extends Chart {
     let lastTooltipContent: string | null = null;
     const handleEvent = (event: InteractionEvent<ScatterRecord>): void => {
       if (event.type === 'hover') {
+        if (event.isNewDatum) {
+          this.applyHoverDecoration(event.datum);
+        }
         if (this.tooltip !== null) {
           if (event.isNewDatum || lastTooltipContent === null) {
             lastTooltipContent = this.formatTooltip(event.datum);
@@ -742,6 +785,7 @@ export class ScatterChart extends Chart {
           });
         }
       } else if (event.type === 'leave') {
+        this.clearHoverDecoration();
         this.tooltip?.hide();
         lastTooltipContent = null;
       }
@@ -789,6 +833,70 @@ export class ScatterChart extends Chart {
       parts.push(`${enc.size.field}: ${fmt(enc.size.field, 'quantitative')}`);
     }
     return parts.join(' • ');
+  }
+
+  /**
+   * Position and reveal the hover overlay on a newly-hovered point. Cancels
+   * any in-flight scale/fade so rapid point-to-point movement reads as
+   * cancel-and-restart, not a queued sequence or a blend.
+   *
+   * @internal
+   */
+  private applyHoverDecoration(record: ScatterRecord): void {
+    const overlay = this.hoverOverlay;
+    if (overlay === null || this.app === null) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+
+    overlay.tint = record.color;
+    overlay.position.set(record.x, record.y);
+
+    const baseScale = record.radius / TEXTURE_RADIUS;
+    const targetScale = baseScale * HOVER_SCALE_MULTIPLIER;
+    const startScale = overlay.scale.x;
+    const startAlpha = overlay.alpha;
+
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        const s = startScale + (targetScale - startScale) * p;
+        overlay.scale.set(s);
+        overlay.alpha = startAlpha + (1 - startAlpha) * p;
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
+  }
+
+  /**
+   * Fade the hover overlay back to invisible. Leaves the overlay's scale at
+   * its current value so a fast leave-then-re-enter doesn't snap visibly.
+   *
+   * @internal
+   */
+  private clearHoverDecoration(): void {
+    const overlay = this.hoverOverlay;
+    if (overlay === null || this.app === null) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+
+    const startAlpha = overlay.alpha;
+    if (startAlpha === 0) return;
+
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        overlay.alpha = startAlpha * (1 - p);
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
   }
 }
 

@@ -1,6 +1,8 @@
 import { scaleBand, scaleLinear } from 'd3-scale';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setMediaMatch } from '../setup.js';
+
 /**
  * Mock pixi.js at the module boundary. happy-dom has no WebGL — a real
  * PIXI Application / Container / Graphics would fail to allocate. The
@@ -11,7 +13,14 @@ vi.mock('pixi.js', () => {
   class MockContainer {
     static instances: MockContainer[] = [];
     children: any[] = [];
-    position = { set: vi.fn((_x: number, _y: number) => undefined), x: 0, y: 0 };
+    position = {
+      x: 0,
+      y: 0,
+      set: vi.fn(function (this: { x: number; y: number }, x: number, y: number) {
+        this.x = x;
+        this.y = y;
+      }),
+    };
     destroyed = false;
     parent: MockContainer | null = null;
     addChild = vi.fn((child: any): any => {
@@ -44,10 +53,12 @@ vi.mock('pixi.js', () => {
     strokeCalls: { color?: number; width?: number; alpha?: number }[] = [];
     moveToCalls: { x: number; y: number }[] = [];
     lineToCalls: { x: number; y: number }[] = [];
+    circleCalls: { x: number; y: number; r: number }[] = [];
     clear = vi.fn((): this => {
       this.clearCalls += 1;
       this.moveToCalls = [];
       this.lineToCalls = [];
+      this.circleCalls = [];
       return this;
     });
     moveTo = vi.fn((x: number, y: number): this => {
@@ -56,6 +67,10 @@ vi.mock('pixi.js', () => {
     });
     lineTo = vi.fn((x: number, y: number): this => {
       this.lineToCalls.push({ x, y });
+      return this;
+    });
+    circle = vi.fn((x: number, y: number, r: number): this => {
+      this.circleCalls.push({ x, y, r });
       return this;
     });
     rect = vi.fn((_x: number, _y: number, _w: number, _h: number): this => this);
@@ -92,6 +107,9 @@ vi.mock('pixi.js', () => {
   class MockSprite extends MockContainer {
     static sInstances: MockSprite[] = [];
     eventMode = 'none';
+    width = 0;
+    height = 0;
+    scale = { x: 1, y: 1 };
     handlers = new Map<string, Set<(e: unknown) => void>>();
     on = vi.fn((event: string, handler: (e: unknown) => void): this => {
       let set = this.handlers.get(event);
@@ -621,5 +639,169 @@ describe('createLineHitTester — band x-axis', () => {
     const tester = createLineHitTester(series, xAdapter as never, yAdapter, 50);
     const hit = tester({ x: 500, y: 50 });
     expect(hit).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Hover decoration                                                           *
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Synthetic FederatedPointerEvent shape — same minimal surface as the one in
+ * `tests/core/InteractionLayer.test.ts`. Charts call `getLocalPosition(sprite)`
+ * to derive the plot-local coordinate and read `client.x/y` for the global
+ * (page) coordinate.
+ */
+interface PointerEvt {
+  button: number;
+  client: { x: number; y: number };
+  getLocalPosition: (s: unknown) => { x: number; y: number };
+}
+function makePointerEvent(local: { x: number; y: number }, client = local): PointerEvt {
+  return { button: 0, client, getLocalPosition: () => local };
+}
+function fireOnInteractionSprite(eventName: string, evt: PointerEvt): void {
+  // The InteractionLayer's hit-test sprite is the only Sprite the chart
+  // creates that has 'pointermove' / 'pointerleave' handlers wired.
+  const target = MockSprite.sInstances.find((s) => s.handlers.has(eventName));
+  if (target === undefined) throw new Error(`no sprite with handler for ${eventName}`);
+  for (const h of target.handlers.get(eventName)!) h(evt);
+}
+/**
+ * Find the hover-marker Graphics inside the LineChart's plotContainer. It is
+ * a Graphics with exactly one `circleCalls` entry (drawn at radius 6) and
+ * `alpha` set as a numeric property — anything else (axes, series lines)
+ * either has no circles or has different stroke geometry.
+ *
+ * NOTE: This MockGraphics has no `circleCalls` array — it captures circle
+ * via mock methods but we want the marker's identity for alpha/position
+ * assertions. The marker is created LAST (after axes + lines), so it's the
+ * most recently constructed Graphics whose `alpha` was set to 0.
+ */
+function findHoverMarker(): MockGfx & { alpha?: number; position: { x: number; y: number } } {
+  // Marker is the only Graphics with circleCalls (it draws a single filled
+  // circle on hover). Before any hover, it has no circleCalls — so it's
+  // the most-recent Graphics with alpha === 0.
+  const all = MockGraphics.gInstances as unknown as (MockGfx & {
+    alpha?: number;
+    circleCalls?: { x: number; y: number; r: number }[];
+    position: { x: number; y: number };
+  })[];
+  // Walk in reverse construction order — the hover marker is created last
+  // inside render() (after lines), so this lands on it.
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const g = all[i]!;
+    // Hover marker has no lineTo (only circle + fill) and alpha is defined.
+    if (g.lineToCalls.length === 0 && g.alpha !== undefined) {
+      return g;
+    }
+  }
+  throw new Error('hover marker Graphics not found');
+}
+
+describe('LineChart — hover decoration', () => {
+  beforeEach(() => {
+    // Reduced motion makes tween() synchronous (onUpdate(1) + onComplete fire
+    // immediately) — deterministic decoration state after each event.
+    setMediaMatch('(prefers-reduced-motion: reduce)', true);
+  });
+
+  it('creates an invisible hover marker (alpha 0) after first render', async () => {
+    const container = makeContainer();
+    const chart = new LineChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const marker = findHoverMarker();
+    expect(marker.alpha).toBe(0);
+    // No circle drawn yet — marker is invisible until first hover.
+    const circleCalls = (marker as unknown as { circleCalls?: unknown[] }).circleCalls ?? [];
+    expect(circleCalls).toHaveLength(0);
+
+    chart.destroy();
+  });
+
+  // Test data: x ∈ [0, 3], y ∈ {10, 20, 30, 50}; y-scale nices to [0, 50].
+  // Plot is 720 × 536 (after default margins). First datum projects to
+  // (0, 428.8); last datum to (720, 0).
+  const DATUM_0 = { x: 0, y: 429 };
+  const DATUM_3 = { x: 720, y: 0 };
+
+  it('on hover-enter, marker draws a circle and animates to alpha 1', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new LineChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+
+    const marker = findHoverMarker();
+    expect(marker.alpha).toBe(1); // reduced-motion → final state immediately
+    const circleCalls = (marker as unknown as { circleCalls: { r: number }[] }).circleCalls;
+    expect(circleCalls.length).toBeGreaterThan(0);
+    expect(circleCalls[circleCalls.length - 1]!.r).toBe(6);
+
+    chart.destroy();
+  });
+
+  it('isNewDatum=false (move within same datum) does NOT redraw the marker', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new LineChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+    const marker = findHoverMarker();
+    const circleCallsBefore = (marker as unknown as { circleCalls: unknown[] }).circleCalls.length;
+
+    // Tiny move that stays within the SAME first-datum hit radius (20px).
+    fireOnInteractionSprite('pointermove', makePointerEvent({ x: 1, y: 428 }));
+
+    const circleCallsAfter = (marker as unknown as { circleCalls: unknown[] }).circleCalls.length;
+    expect(circleCallsAfter).toBe(circleCallsBefore); // no redraw
+
+    chart.destroy();
+  });
+
+  it('on leave, marker fades back to alpha 0', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new LineChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+    fireOnInteractionSprite('pointerleave', makePointerEvent(DATUM_0));
+
+    const marker = findHoverMarker();
+    expect(marker.alpha).toBe(0);
+
+    chart.destroy();
+  });
+
+  it('rapid A → B datum change cancels A and ends at B', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new LineChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+    const marker = findHoverMarker();
+    const positionAfterA = { x: marker.position.x, y: marker.position.y };
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_3));
+
+    // Marker repositioned to datum B (plot-x ≈ 720), not somewhere between A and B.
+    expect(marker.position.x).not.toBe(positionAfterA.x);
+    expect(marker.position.x).toBeGreaterThan(700);
+    expect(marker.alpha).toBe(1);
+
+    chart.destroy();
+  });
+
+  it('destroy() during hover does not throw', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new LineChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+    expect(() => {
+      chart.destroy();
+    }).not.toThrow();
+    expect(chart.destroyed).toBe(true);
   });
 });

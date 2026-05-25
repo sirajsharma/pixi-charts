@@ -46,6 +46,12 @@ export {
 /** Stroke width for plotted lines. */
 const LINE_STROKE_WIDTH = 2;
 
+/** Hover-marker radius (pixels) drawn at the active datum on hover. */
+const HOVER_MARKER_RADIUS = 6;
+
+/** Duration (ms) of hover decoration fade-in / fade-out. */
+const HOVER_ANIMATION_MS = 120;
+
 export interface LineChartOptions {
   /** DOM element the chart canvas will be appended to. */
   container: HTMLElement;
@@ -108,6 +114,14 @@ export class LineChart extends Chart {
   private tooltip: Tooltip | null = null;
   private interactionLayer: InteractionLayer<CartesianHit> | null = null;
   private legend: Legend | null = null;
+  /**
+   * Hover decoration — a small filled circle drawn at the active datum.
+   * Recreated on every {@link render} as a child of the rebuilt plotContainer;
+   * cleared back to null at the top of render so a resize-during-hover starts
+   * fresh on the next pointermove.
+   */
+  private hoverMarker: Graphics | null = null;
+  private hoverAnimationCancel: (() => void) | null = null;
   /** Tracks whether the very first render has happened (so resize skips the enter animation). */
   private didInitialRender = false;
   /** Tracks whether the downsampling notice has already been logged for this instance. */
@@ -189,6 +203,12 @@ export class LineChart extends Chart {
     // next tick draws into a just-destroyed Graphics and crashes. (Unit tests
     // miss it — the mock ResizeObserver never auto-fires during a live tween.)
     this.cancelAllTweens();
+
+    // The hover marker lives inside plotContainer and dies with it below.
+    // Drop our references so the next hover starts clean; cancelAllTweens()
+    // above has already invalidated any in-flight hover fade.
+    this.hoverMarker = null;
+    this.hoverAnimationCancel = null;
 
     // Tear down any prior content. On a resize this can be the second
     // pass; the first pass starts with all slots null.
@@ -273,6 +293,14 @@ export class LineChart extends Chart {
     this.linesContainer = linesContainer;
 
     this.drawLines();
+
+    // Hover marker sits above the lines so it isn't occluded by series
+    // strokes. Lives inside plotContainer so it's destroyed/recreated with
+    // each render — no per-render leak risk.
+    const hoverMarker = new Graphics();
+    hoverMarker.alpha = 0;
+    plotContainer.addChild(hoverMarker);
+    this.hoverMarker = hoverMarker;
 
     // Interaction + tooltip wiring. The tooltip is created lazily on the
     // first render rather than reusing across renders, so its DOM stays
@@ -401,6 +429,9 @@ export class LineChart extends Chart {
     let lastTooltipContent: string | null = null;
     const handleEvent = (event: InteractionEvent<CartesianHit>): void => {
       if (event.type === 'hover') {
+        if (event.isNewDatum) {
+          this.applyHoverDecoration(event.datum);
+        }
         if (this.tooltip !== null) {
           if (event.isNewDatum || lastTooltipContent === null) {
             lastTooltipContent = this.formatTooltip(event.datum);
@@ -415,6 +446,7 @@ export class LineChart extends Chart {
           });
         }
       } else if (event.type === 'leave') {
+        this.clearHoverDecoration();
         this.tooltip?.hide();
         lastTooltipContent = null;
       }
@@ -436,5 +468,66 @@ export class LineChart extends Chart {
     const yField = this.spec.encoding.y?.field ?? 'y';
     const xType = this.spec.encoding.x?.type ?? 'quantitative';
     return formatCartesianTooltip(xField, yField, xType, hit);
+  }
+
+  /**
+   * Position and reveal the hover marker on a newly-hovered datum. Cancels
+   * any in-flight fade so rapid datum-to-datum movement reads as
+   * cancel-and-restart, not a queued sequence or a blend.
+   *
+   * @internal
+   */
+  private applyHoverDecoration(hit: CartesianHit): void {
+    const marker = this.hoverMarker;
+    const xAdapter = this.xAdapter;
+    const yAdapter = this.yAdapter;
+    if (marker === null || xAdapter === null || yAdapter === null || this.app === null) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+
+    marker.clear().circle(0, 0, HOVER_MARKER_RADIUS).fill({ color: hit.series.color, alpha: 1 });
+    marker.position.set(xAdapter.scale(hit.point.xRaw), yAdapter.scale(hit.point.y));
+
+    const startAlpha = marker.alpha;
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        marker.alpha = startAlpha + (1 - startAlpha) * p;
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
+  }
+
+  /**
+   * Fade the hover marker back to invisible. Leaves the marker in place
+   * (position unchanged) so a fast leave-then-re-enter on the same datum
+   * doesn't snap visibly.
+   *
+   * @internal
+   */
+  private clearHoverDecoration(): void {
+    const marker = this.hoverMarker;
+    if (marker === null || this.app === null) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+
+    const startAlpha = marker.alpha;
+    if (startAlpha === 0) return;
+
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        marker.alpha = startAlpha * (1 - p);
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
   }
 }

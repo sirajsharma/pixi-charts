@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { MockResizeObserver } from '../setup.js';
+import { MockResizeObserver, setMediaMatch } from '../setup.js';
 
 /**
  * Mock pixi.js at the module boundary. happy-dom has no WebGL — every PIXI
@@ -55,7 +55,14 @@ vi.mock('pixi.js', () => {
   class MockContainer {
     static instances: MockContainer[] = [];
     children: any[] = [];
-    position = { set: vi.fn(), x: 0, y: 0 };
+    position = {
+      x: 0,
+      y: 0,
+      set: vi.fn(function (this: { x: number; y: number }, x: number, y: number) {
+        this.x = x;
+        this.y = y;
+      }),
+    };
     destroyed = false;
     parent: MockContainer | null = null;
     addChild = vi.fn((child: any): any => {
@@ -86,10 +93,17 @@ vi.mock('pixi.js', () => {
     static gInstances: MockGraphics[] = [];
     rectCalls: { x: number; y: number; w: number; h: number }[] = [];
     fillCalls: unknown[] = [];
-    clear = vi.fn((): this => this);
+    strokeCalls: { color?: number; width?: number; alpha?: number }[] = [];
+    clear = vi.fn((): this => {
+      this.rectCalls = [];
+      return this;
+    });
     moveTo = vi.fn((): this => this);
     lineTo = vi.fn((): this => this);
-    stroke = vi.fn((): this => this);
+    stroke = vi.fn((opts: { color?: number; width?: number; alpha?: number }): this => {
+      this.strokeCalls.push({ ...opts });
+      return this;
+    });
     rect = vi.fn((x: number, y: number, w: number, h: number): this => {
       this.rectCalls.push({ x, y, w, h });
       return this;
@@ -124,9 +138,22 @@ vi.mock('pixi.js', () => {
     eventMode = 'none';
     width = 0;
     height = 0;
+    scale = { x: 1, y: 1 };
     texture: any;
-    on = vi.fn((): this => this);
-    off = vi.fn((): this => this);
+    handlers = new Map<string, Set<(e: unknown) => void>>();
+    on = vi.fn((event: string, handler: (e: unknown) => void): this => {
+      let set = this.handlers.get(event);
+      if (set === undefined) {
+        set = new Set();
+        this.handlers.set(event, set);
+      }
+      set.add(handler);
+      return this;
+    });
+    off = vi.fn((event: string, handler: (e: unknown) => void): this => {
+      this.handlers.get(event)?.delete(handler);
+      return this;
+    });
     constructor(t: any) {
       super();
       this.texture = t;
@@ -180,7 +207,7 @@ vi.mock('pixi.js', () => {
   };
 });
 
-import { Application, BufferImageSource, Sprite, Texture } from 'pixi.js';
+import { Application, BufferImageSource, Graphics, Sprite, Texture } from 'pixi.js';
 
 import {
   buildHeatmapHitTester,
@@ -210,8 +237,23 @@ const MockBuf = BufferImageSource as unknown as {
 const MockTex = Texture as unknown as {
   tInstances: { destroy: ReturnType<typeof vi.fn>; source: { scaleMode: string } | null }[];
 };
+const MockGfx = Graphics as unknown as {
+  gInstances: {
+    rectCalls: { x: number; y: number; w: number; h: number }[];
+    strokeCalls: { color?: number; width?: number; alpha?: number }[];
+    alpha?: number;
+    position: { x: number; y: number };
+    parent: unknown;
+  }[];
+};
 const MockSpr = Sprite as unknown as {
-  sInstances: { width: number; height: number; parent: unknown; texture: { source?: unknown } }[];
+  sInstances: {
+    width: number;
+    height: number;
+    parent: unknown;
+    texture: { source?: unknown };
+    handlers: Map<string, Set<(e: unknown) => void>>;
+  }[];
 };
 
 /**
@@ -268,6 +310,7 @@ beforeEach(() => {
   MockBuf.instances = [];
   MockTex.tInstances = [];
   MockSpr.sInstances = [];
+  MockGfx.gInstances = [];
 });
 
 describe('HeatmapChart — construction', () => {
@@ -489,5 +532,119 @@ describe('HeatmapChart — animation', () => {
     await chart.init();
     expect(MockApp.instances[0]!.ticker.add).not.toHaveBeenCalled();
     chart.destroy();
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Hover decoration                                                           *
+ * -------------------------------------------------------------------------- */
+
+interface PointerEvt {
+  button: number;
+  client: { x: number; y: number };
+  getLocalPosition: (s: unknown) => { x: number; y: number };
+}
+function makePointerEvent(local: { x: number; y: number }, client = local): PointerEvt {
+  return { button: 0, client, getLocalPosition: () => local };
+}
+function fireOnInteractionSprite(eventName: string, evt: PointerEvt): void {
+  const target = MockSpr.sInstances.find((s) => s.handlers.has(eventName));
+  if (target === undefined) throw new Error(`no sprite with handler for ${eventName}`);
+  for (const h of target.handlers.get(eventName)!) h(evt);
+}
+/**
+ * Find the hover-border Graphics. The heatmap chart creates Graphics only
+ * for axes (which never call `rect`) and the hover border (which strokes a
+ * rect and has alpha set). The hover border is the only one with `alpha`
+ * defined.
+ */
+function findHoverBorder(): (typeof MockGfx.gInstances)[number] {
+  for (let i = MockGfx.gInstances.length - 1; i >= 0; i -= 1) {
+    const g = MockGfx.gInstances[i]!;
+    if (g.alpha !== undefined) return g;
+  }
+  throw new Error('hover border Graphics not found');
+}
+
+describe('HeatmapChart — hover decoration', () => {
+  beforeEach(() => {
+    setMediaMatch('(prefers-reduced-motion: reduce)', true);
+  });
+
+  // The continuous color legend reduces plot width to ~548. With 3 x-cats
+  // and 2 y-cats over plot ~548×536, each cell is ≈ 183 × 268 px.
+  // Cell ('A', 'p'): x ∈ [0, 183]. Cell ('C', 'q'): x ∈ [365, 548], y ∈ [268, 536].
+  const CELL_AP = { x: 90, y: 130 };
+  const CELL_CQ = { x: 450, y: 400 };
+
+  it('creates an invisible hover-border Graphics (alpha 0) after first render', async () => {
+    const chart = new HeatmapChart({ container: makeContainer(), spec: makeSpec() });
+    await chart.init();
+
+    const border = findHoverBorder();
+    expect(border.alpha).toBe(0);
+
+    chart.destroy();
+  });
+
+  it('on hover-enter, strokes a 2px white border and animates to alpha 1', async () => {
+    const chart = new HeatmapChart({ container: makeContainer(), spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(CELL_AP));
+
+    const border = findHoverBorder();
+    expect(border.alpha).toBe(1);
+    const lastStroke = border.strokeCalls[border.strokeCalls.length - 1];
+    expect(lastStroke?.color).toBe(0xffffff);
+    expect(lastStroke?.width).toBe(2);
+    // The rect drawn covers cell 'A','p' starting at (0, 0).
+    const lastRect = border.rectCalls[border.rectCalls.length - 1];
+    expect(lastRect?.x).toBeCloseTo(0, 0);
+    expect(lastRect?.y).toBeCloseTo(0, 0);
+
+    chart.destroy();
+  });
+
+  it('on leave, border fades back to alpha 0', async () => {
+    const chart = new HeatmapChart({ container: makeContainer(), spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(CELL_AP));
+    fireOnInteractionSprite('pointerleave', makePointerEvent(CELL_AP));
+
+    const border = findHoverBorder();
+    expect(border.alpha).toBe(0);
+
+    chart.destroy();
+  });
+
+  it('rapid cell A → C/q change repositions the border to C/q', async () => {
+    const chart = new HeatmapChart({ container: makeContainer(), spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(CELL_AP));
+    fireOnInteractionSprite('pointermove', makePointerEvent(CELL_CQ));
+
+    const border = findHoverBorder();
+    const lastRect = border.rectCalls[border.rectCalls.length - 1];
+    // Cell ('C', 'q') sits at x ≈ 365, y ≈ 268 (after legend-reduced plot
+    // width). New rect should be in the bottom-right of the plot.
+    expect(lastRect?.x).toBeGreaterThan(300);
+    expect(lastRect?.y).toBeGreaterThan(200);
+    expect(border.alpha).toBe(1);
+
+    chart.destroy();
+  });
+
+  it('destroy() during hover does not throw', async () => {
+    const chart = new HeatmapChart({ container: makeContainer(), spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(CELL_AP));
+    expect(() => {
+      chart.destroy();
+    }).not.toThrow();
+    expect(chart.destroyed).toBe(true);
   });
 });

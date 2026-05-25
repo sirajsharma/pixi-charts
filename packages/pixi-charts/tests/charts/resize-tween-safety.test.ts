@@ -106,6 +106,17 @@ vi.mock('pixi.js', () => {
     eventMode = 'none';
     width = 0;
     height = 0;
+    alpha = 1;
+    tint = 0xffffff;
+    anchor = { set: vi.fn() };
+    scale = {
+      x: 1,
+      y: 1,
+      set: vi.fn(function (this: { x: number; y: number }, x: number, y?: number) {
+        this.x = x;
+        this.y = y ?? x;
+      }),
+    };
     on = vi.fn((): this => this);
     off = vi.fn((): this => this);
     constructor(_t: unknown) {

@@ -32,6 +32,13 @@ const formatValue = d3format(',.2~f');
 
 const TWO_PI = Math.PI * 2;
 
+/** Duration (ms) of hover decoration fade-in / fade-out. */
+const HOVER_ANIMATION_MS = 120;
+/** Stroke width (px) of the hover-slice border. */
+const HOVER_BORDER_WIDTH = 2;
+/** Border color (white). Low contrast on light slices is acceptable for v1. */
+const HOVER_BORDER_COLOR = 0xffffff;
+
 /**
  * One slice, post-transformation. `category` labels the slice (drawn in
  * the legend and tooltip), `value` is its raw numeric magnitude, `percent`
@@ -149,6 +156,15 @@ export class PieChart extends Chart {
   private legend: Legend | null = null;
   private legendItems: SliceLegendItem[] | null = null;
 
+  /**
+   * Hover decoration — a Graphics overlay above the main pie graphics that
+   * strokes the hovered slice's outline (wedge for pies, annular wedge for
+   * donuts). Recreated each render as a child of the rebuilt plotContainer;
+   * reset at the top of render so a resize-during-hover starts fresh.
+   */
+  private hoverBorder: Graphics | null = null;
+  private hoverAnimationCancel: (() => void) | null = null;
+
   /** Tracks whether the first render has happened (resize skips the enter animation). */
   private didInitialRender = false;
 
@@ -214,6 +230,11 @@ export class PieChart extends Chart {
     // resize can re-enter render() mid-animation; without this the tween's
     // next tick would draw into a just-destroyed Graphics and crash.
     this.cancelAllTweens();
+
+    // Hover state references the about-to-be-destroyed plotContainer's
+    // children; drop so the next hover starts clean.
+    this.hoverBorder = null;
+    this.hoverAnimationCancel = null;
 
     if (this.plotContainer !== null) {
       stage.removeChild(this.plotContainer);
@@ -298,6 +319,15 @@ export class PieChart extends Chart {
     this.graphics = graphics;
 
     this.drawSlices();
+
+    // Hover border sits above the pie's main graphics so the stroke isn't
+    // occluded by the slice fills. Child of plotContainer — destroyed and
+    // recreated each render.
+    const hoverBorder = new Graphics();
+    hoverBorder.alpha = 0;
+    plotContainer.addChild(hoverBorder);
+    this.hoverBorder = hoverBorder;
+
     this.setupInteractionAndTooltip();
 
     if (legend !== null && layout.legendRect !== null) {
@@ -498,6 +528,9 @@ export class PieChart extends Chart {
     let lastTooltipContent: string | null = null;
     const handleEvent = (event: InteractionEvent<PieSlice>): void => {
       if (event.type === 'hover') {
+        if (event.isNewDatum) {
+          this.applyHoverDecoration(event.datum);
+        }
         if (this.tooltip !== null) {
           if (event.isNewDatum || lastTooltipContent === null) {
             lastTooltipContent = this.formatTooltip(event.datum);
@@ -512,6 +545,7 @@ export class PieChart extends Chart {
           });
         }
       } else if (event.type === 'leave') {
+        this.clearHoverDecoration();
         this.tooltip?.hide();
         lastTooltipContent = null;
       }
@@ -536,6 +570,78 @@ export class PieChart extends Chart {
       `${categoryField}: ${slice.category} • ` +
       `${valueField}: ${formatValue(slice.value)} (${formatPercent(slice.percent)})`
     );
+  }
+
+  /**
+   * Trace and reveal the hover border on a newly-hovered slice. Reuses the
+   * same `drawPieSliceArc` / `drawDonutSliceArc` path helpers as the main
+   * pie draw — they only describe the path (no fill), so a `.stroke(...)`
+   * follow-up gives the slice's outline.
+   *
+   * @internal
+   */
+  private applyHoverDecoration(slice: PieSlice): void {
+    const border = this.hoverBorder;
+    if (border === null || this.app === null) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+
+    const { centerX, centerY, innerRadius, outerRadius, slices } = this;
+    const isDonut = innerRadius > 0;
+    // Reproduce drawAt's full-disc handling so a one-slice full-disc pie
+    // strokes a closed circle, not a zero-length wedge.
+    const extent = angularExtent(slice.startAngle, slice.endAngle);
+    const sweep = extent === 0 && slices.length === 1 ? TWO_PI : extent;
+    const start = slice.startAngle;
+    const end = start + sweep;
+
+    border.clear();
+    if (isDonut) {
+      drawDonutSliceArc(border, centerX, centerY, innerRadius, outerRadius, start, end);
+    } else {
+      drawPieSliceArc(border, centerX, centerY, outerRadius, start, end);
+    }
+    border.stroke({ width: HOVER_BORDER_WIDTH, color: HOVER_BORDER_COLOR, alpha: 1 });
+
+    const startAlpha = border.alpha;
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        border.alpha = startAlpha + (1 - startAlpha) * p;
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
+  }
+
+  /**
+   * Fade the hover border back to invisible.
+   *
+   * @internal
+   */
+  private clearHoverDecoration(): void {
+    const border = this.hoverBorder;
+    if (border === null || this.app === null) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+
+    const startAlpha = border.alpha;
+    if (startAlpha === 0) return;
+
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        border.alpha = startAlpha * (1 - p);
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
   }
 }
 

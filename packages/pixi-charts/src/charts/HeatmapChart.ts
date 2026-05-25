@@ -1,7 +1,7 @@
 import { extent } from 'd3-array';
 import { format as d3format } from 'd3-format';
 import { scaleBand } from 'd3-scale';
-import { BufferImageSource, Container, Sprite, Texture } from 'pixi.js';
+import { BufferImageSource, Container, Graphics, Sprite, Texture } from 'pixi.js';
 
 import { Axis } from '../core/Axis.js';
 import { Chart } from '../core/Chart.js';
@@ -15,6 +15,7 @@ import {
 import { Legend } from '../core/Legend.js';
 import { bandAdapter, type ScaleAdapter } from '../core/ScaleAdapter.js';
 import { Tooltip } from '../core/Tooltip.js';
+import { tween } from '../core/animation.js';
 import { computeLayout } from '../core/layout.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 
@@ -24,6 +25,13 @@ import { resolveHeight, resolveMargin, resolveWidth, toNumber } from './_shared/
 const DEFAULT_SCHEME: SequentialSchemeName = 'viridis';
 /** Numeric format for tooltip value display. Same `~s` SI used by other axes. */
 const VALUE_TOOLTIP_FORMAT = ',.3~s';
+
+/** Duration (ms) of hover decoration fade-in / fade-out. */
+const HOVER_ANIMATION_MS = 120;
+/** Stroke width (px) of the hover-cell border. */
+const HOVER_BORDER_WIDTH = 2;
+/** Border color (white). Low contrast on light cells is acceptable for v1. */
+const HOVER_BORDER_COLOR = 0xffffff;
 
 /**
  * One cell in the heatmap, post-transformation.
@@ -169,6 +177,14 @@ export class HeatmapChart extends Chart {
   private texture: Texture | null = null;
   private source: BufferImageSource | null = null;
 
+  /**
+   * Hover decoration — a Graphics overlay above the heatmap sprite that
+   * strokes the hovered cell's pixel rectangle. Recreated each render as a
+   * child of the rebuilt plotContainer.
+   */
+  private hoverBorder: Graphics | null = null;
+  private hoverAnimationCancel: (() => void) | null = null;
+
   /** Cached cell records keyed `(xCategory, yCategory) → cell` for hit-test. */
   private cellMap = new Map<string, Map<string, HeatmapCell>>();
   /** Insertion-order x categories. Drives the band domain and texture layout. */
@@ -266,7 +282,14 @@ export class HeatmapChart extends Chart {
 
     // No enter animation in v1, but cancelAllTweens is cheap and keeps the
     // pattern aligned with the other charts in case animation lands later.
+    // (It also cancels any in-flight hover-border fade — desirable, since
+    // the old Graphics is about to be destroyed below.)
     this.cancelAllTweens();
+
+    // The hover border was a child of the about-to-be-destroyed plotContainer.
+    // Drop our reference so the next hover starts clean.
+    this.hoverBorder = null;
+    this.hoverAnimationCancel = null;
 
     if (this.plotContainer !== null) {
       // Detach the persistent sprite BEFORE destroying the plot container
@@ -435,6 +458,14 @@ export class HeatmapChart extends Chart {
       plotContainer.addChild(this.sprite);
     }
 
+    // Hover border lives above the sprite so the stroke isn't occluded by
+    // the heatmap texture. A child of plotContainer — destroyed/recreated
+    // each render.
+    const hoverBorder = new Graphics();
+    hoverBorder.alpha = 0;
+    plotContainer.addChild(hoverBorder);
+    this.hoverBorder = hoverBorder;
+
     this.setupInteractionAndTooltip();
 
     if (legend !== null && layout.legendRect !== null) {
@@ -541,6 +572,9 @@ export class HeatmapChart extends Chart {
     let lastTooltipContent: string | null = null;
     const handleEvent = (event: InteractionEvent<HeatmapCell>): void => {
       if (event.type === 'hover') {
+        if (event.isNewDatum) {
+          this.applyHoverDecoration(event.datum);
+        }
         if (this.tooltip !== null) {
           if (event.isNewDatum || lastTooltipContent === null) {
             lastTooltipContent = this.formatTooltip(event.datum);
@@ -553,6 +587,7 @@ export class HeatmapChart extends Chart {
           });
         }
       } else if (event.type === 'leave') {
+        this.clearHoverDecoration();
         this.tooltip?.hide();
         lastTooltipContent = null;
       }
@@ -576,6 +611,73 @@ export class HeatmapChart extends Chart {
     const valueField = enc.value?.field ?? 'value';
     const valueStr = d3format(VALUE_TOOLTIP_FORMAT)(cell.value);
     return `${xField}: ${cell.xCategory} • ${yField}: ${cell.yCategory} • ${valueField}: ${valueStr}`;
+  }
+
+  /**
+   * Position and reveal the hover border on a newly-hovered cell. Cancels
+   * any in-flight fade so rapid cell-to-cell movement reads as
+   * cancel-and-restart.
+   *
+   * @internal
+   */
+  private applyHoverDecoration(cell: HeatmapCell): void {
+    const border = this.hoverBorder;
+    const xAdapter = this.xAdapter;
+    const yAdapter = this.yAdapter;
+    if (border === null || xAdapter === null || yAdapter === null || this.app === null) return;
+
+    const bandwidthX = xAdapter.bandwidth?.() ?? 0;
+    const bandwidthY = yAdapter.bandwidth?.() ?? 0;
+    if (bandwidthX <= 0 || bandwidthY <= 0) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+
+    const x = xAdapter.scale(cell.xCategory);
+    const y = yAdapter.scale(cell.yCategory);
+    border
+      .clear()
+      .rect(x, y, bandwidthX, bandwidthY)
+      .stroke({ width: HOVER_BORDER_WIDTH, color: HOVER_BORDER_COLOR, alpha: 1 });
+
+    const startAlpha = border.alpha;
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        border.alpha = startAlpha + (1 - startAlpha) * p;
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
+  }
+
+  /**
+   * Fade the hover border back to invisible.
+   *
+   * @internal
+   */
+  private clearHoverDecoration(): void {
+    const border = this.hoverBorder;
+    if (border === null || this.app === null) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+
+    const startAlpha = border.alpha;
+    if (startAlpha === 0) return;
+
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        border.alpha = startAlpha * (1 - p);
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
   }
 }
 

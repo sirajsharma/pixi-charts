@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setMediaMatch } from '../setup.js';
+
 /**
  * Mock pixi.js at the module boundary — happy-dom has no WebGL. Mirrors
  * BarChart.test.ts but extends MockGraphics with `arc` (PIXI v8's
@@ -10,7 +12,14 @@ vi.mock('pixi.js', () => {
   class MockContainer {
     static instances: MockContainer[] = [];
     children: any[] = [];
-    position = { set: vi.fn((_x: number, _y: number) => undefined), x: 0, y: 0 };
+    position = {
+      x: 0,
+      y: 0,
+      set: vi.fn(function (this: { x: number; y: number }, x: number, y: number) {
+        this.x = x;
+        this.y = y;
+      }),
+    };
     destroyed = false;
     parent: MockContainer | null = null;
     addChild = vi.fn((child: any): any => {
@@ -121,6 +130,7 @@ vi.mock('pixi.js', () => {
     static sInstances: MockSprite[] = [];
     width = 0;
     height = 0;
+    scale = { x: 1, y: 1 };
     eventMode = 'none';
     handlers = new Map<string, Set<(e: unknown) => void>>();
     on = vi.fn((event: string, handler: (e: unknown) => void): this => {
@@ -202,7 +212,12 @@ type MockGfx = {
   closePathCalls: number;
   parent: { children: unknown[] } | null;
 };
-type MockSpriteT = { width: number; height: number; eventMode: string };
+type MockSpriteT = {
+  width: number;
+  height: number;
+  eventMode: string;
+  handlers: Map<string, Set<(e: unknown) => void>>;
+};
 type MockApp = {
   destroy: ReturnType<typeof vi.fn>;
   ticker: { add: ReturnType<typeof vi.fn> };
@@ -753,5 +768,139 @@ describe('PieChart — destroy', () => {
     expect(chart.destroyed).toBe(true);
     expect(MockApp.instances[0]!.destroy).toHaveBeenCalledTimes(1);
     expect(container.querySelector('div')).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Hover decoration                                                           *
+ * -------------------------------------------------------------------------- */
+
+interface PointerEvt {
+  button: number;
+  client: { x: number; y: number };
+  getLocalPosition: (s: unknown) => { x: number; y: number };
+}
+function makePointerEvent(local: { x: number; y: number }, client = local): PointerEvt {
+  return { button: 0, client, getLocalPosition: () => local };
+}
+function fireOnInteractionSprite(eventName: string, evt: PointerEvt): void {
+  const target = MockSpriteCls.sInstances.find((s) => s.handlers.has(eventName));
+  if (target === undefined) throw new Error(`no sprite with handler for ${eventName}`);
+  for (const h of target.handlers.get(eventName)!) h(evt);
+}
+/**
+ * The hover-border Graphics is the only one in PieChart with `alpha` set
+ * as an own property (the chart sets `hoverBorder.alpha = 0` in render).
+ * The main slice Graphics and any legend swatches never touch `alpha`.
+ */
+function findHoverBorder(): MockGfx & {
+  alpha?: number;
+  strokeCalls: { color?: number; width?: number; alpha?: number }[];
+} {
+  const all = MockGraphicsCls.gInstances as unknown as (MockGfx & {
+    alpha?: number;
+    strokeCalls: { color?: number; width?: number; alpha?: number }[];
+  })[];
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const g = all[i]!;
+    if (g.alpha !== undefined) return g;
+  }
+  throw new Error('hover border Graphics not found');
+}
+
+describe('PieChart — hover decoration', () => {
+  beforeEach(() => {
+    setMediaMatch('(prefers-reduced-motion: reduce)', true);
+  });
+
+  // 2-slice 50/50 pie with startAngle = -π/2 (12 o'clock). Slice 1 covers
+  // the right half (angle [-π/2, π/2]); slice 2 covers the left. Plot is
+  // ~708 × 568 after margins; center ≈ (354, 284). Point to the right of
+  // center hits slice 1; to the left, slice 2.
+  function hoverSpec(): ChartSpec {
+    return {
+      type: 'pie',
+      data: [
+        { browser: 'A', share: 50 },
+        { browser: 'B', share: 50 },
+      ],
+      encoding: {
+        x: { field: 'browser', type: 'categorical' },
+        value: { field: 'share' },
+      },
+      animation: { enter: false },
+    };
+  }
+  // Center is at plot midpoint. For the 2-slice spec with no legend (since
+  // legend appears only ≥2 slices — and 2 qualifies), plot width = 708.
+  // Right of center inside the disc (radius 276):
+  const HIT_RIGHT = { x: 450, y: 284 };
+  const HIT_LEFT = { x: 260, y: 284 };
+
+  it('creates an invisible hover border (alpha 0) after first render', async () => {
+    const chart = new PieChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    const border = findHoverBorder();
+    expect(border.alpha).toBe(0);
+
+    chart.destroy();
+  });
+
+  it('on hover-enter, strokes a 2px white outline and animates to alpha 1', async () => {
+    const chart = new PieChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(HIT_RIGHT));
+
+    const border = findHoverBorder();
+    expect(border.alpha).toBe(1);
+    const lastStroke = border.strokeCalls[border.strokeCalls.length - 1];
+    expect(lastStroke?.color).toBe(0xffffff);
+    expect(lastStroke?.width).toBe(2);
+
+    chart.destroy();
+  });
+
+  it('on leave, border fades back to alpha 0', async () => {
+    const chart = new PieChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(HIT_RIGHT));
+    fireOnInteractionSprite('pointerleave', makePointerEvent(HIT_RIGHT));
+
+    const border = findHoverBorder();
+    expect(border.alpha).toBe(0);
+
+    chart.destroy();
+  });
+
+  it('rapid right → left slice change retraces border for the new slice', async () => {
+    const chart = new PieChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(HIT_RIGHT));
+    const border = findHoverBorder();
+    const strokesAfterFirst = border.strokeCalls.length;
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(HIT_LEFT));
+
+    // A new stroke call was issued for the new slice — at least one more
+    // than after the first hover.
+    expect(border.strokeCalls.length).toBeGreaterThan(strokesAfterFirst);
+    expect(border.alpha).toBe(1);
+
+    chart.destroy();
+  });
+
+  it('destroy() during hover does not throw', async () => {
+    const chart = new PieChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(HIT_RIGHT));
+    expect(() => {
+      chart.destroy();
+    }).not.toThrow();
+    expect(chart.destroyed).toBe(true);
   });
 });

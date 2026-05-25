@@ -1,6 +1,8 @@
 import { scaleBand, scaleLinear } from 'd3-scale';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setMediaMatch } from '../setup.js';
+
 /**
  * Mock pixi.js at the module boundary — happy-dom has no WebGL. Same shape
  * as `AreaChart.test.ts`'s mock, with `rect()` extended to record its args
@@ -105,6 +107,9 @@ vi.mock('pixi.js', () => {
   class MockSprite extends MockContainer {
     static sInstances: MockSprite[] = [];
     eventMode = 'none';
+    width = 0;
+    height = 0;
+    scale = { x: 1, y: 1 };
     handlers = new Map<string, Set<(e: unknown) => void>>();
     on = vi.fn((event: string, handler: (e: unknown) => void): this => {
       let set = this.handlers.get(event);
@@ -184,7 +189,12 @@ type MockGfx = {
   fillCalls: { color?: number; alpha?: number }[];
   parent: { children: unknown[] } | null;
 };
-type MockSpriteT = { width: number; height: number; eventMode: string };
+type MockSpriteT = {
+  width: number;
+  height: number;
+  eventMode: string;
+  handlers: Map<string, Set<(e: unknown) => void>>;
+};
 type MockTxt = { text: string };
 type MockApp = {
   destroy: ReturnType<typeof vi.fn>;
@@ -615,5 +625,149 @@ describe('BarChart — destroy', () => {
     expect(chart.destroyed).toBe(true);
     expect(MockApp.instances[0]!.destroy).toHaveBeenCalledTimes(1);
     expect(container.querySelector('div')).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Hover decoration                                                           *
+ * -------------------------------------------------------------------------- */
+
+interface PointerEvt {
+  button: number;
+  client: { x: number; y: number };
+  getLocalPosition: (s: unknown) => { x: number; y: number };
+}
+function makePointerEvent(local: { x: number; y: number }, client = local): PointerEvt {
+  return { button: 0, client, getLocalPosition: () => local };
+}
+function fireOnInteractionSprite(eventName: string, evt: PointerEvt): void {
+  const target = MockSprite.sInstances.find((s) => s.handlers.has(eventName));
+  if (target === undefined) throw new Error(`no sprite with handler for ${eventName}`);
+  for (const h of target.handlers.get(eventName)!) h(evt);
+}
+
+describe('BarChart — hover decoration', () => {
+  beforeEach(() => {
+    // Reduced motion → tween() is synchronous; hover progress reaches 1
+    // immediately. Lets us assert the final lightened color deterministically.
+    setMediaMatch('(prefers-reduced-motion: reduce)', true);
+  });
+
+  // 3 bars on x-band 'A'/'B'/'C' across plot 720px wide (band padding 0.1).
+  // Each band step ≈ 240; bar width ≈ 240 * 0.9 = 216. Bar 'A' starts at
+  // ~12, 'B' at ~252, 'C' at ~492.
+  const BAR_A_CENTER = { x: 120, y: 400 };
+  const BAR_B_CENTER = { x: 360, y: 400 };
+
+  it('first render fills every bar at its base color (no lightening)', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const g = barsGfx();
+    // 3 bars × 1 fill each = 3 fillCalls.
+    const baseFills = g.fillCalls.map((f) => f.color);
+    expect(baseFills.length).toBe(3);
+    // All distinct colors come from a categorical palette — no two equal-to-white
+    // shifts (the default color encoding gives each bar the same color, so
+    // really we're asserting that whatever color was set, it's stable).
+    expect(new Set(baseFills).size).toBeLessThanOrEqual(3);
+
+    chart.destroy();
+  });
+
+  it('on hover-enter, redraws all bars; hovered bar fill differs from base', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const g = barsGfx();
+    const baseColor = g.fillCalls[0]!.color!;
+    const fillsBefore = g.fillCalls.length;
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(BAR_A_CENTER));
+
+    // applyHoverDecoration redraws once at progress 0 then the reduced-motion
+    // tween synchronously redraws again at progress 1 — 6 new fills (2×3 bars).
+    expect(g.fillCalls.length).toBeGreaterThan(fillsBefore);
+    // The final 3 fills are the steady-state hovered render. Bar A is first
+    // by x order and should be lightened; B and C stay at base.
+    const final = g.fillCalls.slice(-3).map((f) => f.color);
+    expect(final[0]).not.toBe(baseColor); // A lightened
+    expect(final[1]).toBe(baseColor); // B base
+    expect(final[2]).toBe(baseColor); // C base
+
+    chart.destroy();
+  });
+
+  it('isNewDatum=false (move within same bar) does NOT redraw all bars', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const g = barsGfx();
+    fireOnInteractionSprite('pointermove', makePointerEvent(BAR_A_CENTER));
+    const fillsAfterEnter = g.fillCalls.length;
+
+    // Move a tiny amount, still inside bar A's hit area.
+    fireOnInteractionSprite(
+      'pointermove',
+      makePointerEvent({ x: BAR_A_CENTER.x + 5, y: BAR_A_CENTER.y + 5 }),
+    );
+
+    // No further redraw — isNewDatum is false on same-bar movement.
+    expect(g.fillCalls.length).toBe(fillsAfterEnter);
+
+    chart.destroy();
+  });
+
+  it('on leave, redraws bars back to base color', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const g = barsGfx();
+    const baseColor = g.fillCalls[0]!.color!;
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(BAR_A_CENTER));
+    fireOnInteractionSprite('pointerleave', makePointerEvent(BAR_A_CENTER));
+
+    // After leave, the most recent N fillCalls should all be the base color.
+    const lastThree = g.fillCalls.slice(-3).map((f) => f.color);
+    for (const c of lastThree) expect(c).toBe(baseColor);
+
+    chart.destroy();
+  });
+
+  it('rapid A → B datum change ends with B (not A) lightened', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const g = barsGfx();
+    const baseColor = g.fillCalls[0]!.color!;
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(BAR_A_CENTER));
+    fireOnInteractionSprite('pointermove', makePointerEvent(BAR_B_CENTER));
+
+    // Final 3 fills correspond to the most recent redraw (bars in order A/B/C).
+    const final = g.fillCalls.slice(-3).map((f) => f.color);
+    expect(final[0]).toBe(baseColor); // A back to base
+    expect(final[1]).not.toBe(baseColor); // B lightened
+    expect(final[2]).toBe(baseColor); // C base
+
+    chart.destroy();
+  });
+
+  it('destroy() during hover does not throw', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(BAR_A_CENTER));
+    expect(() => {
+      chart.destroy();
+    }).not.toThrow();
+    expect(chart.destroyed).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { MockResizeObserver } from '../setup.js';
+import { MockResizeObserver, setMediaMatch } from '../setup.js';
 
 /**
  * Mock pixi.js at the module boundary — happy-dom has no WebGL. Extends the
@@ -23,7 +23,14 @@ vi.mock('pixi.js', () => {
   class MockContainer {
     static instances: MockContainer[] = [];
     children: any[] = [];
-    position = { set: vi.fn(), x: 0, y: 0 };
+    position = {
+      x: 0,
+      y: 0,
+      set: vi.fn(function (this: { x: number; y: number }, x: number, y: number) {
+        this.x = x;
+        this.y = y;
+      }),
+    };
     destroyed = false;
     parent: MockContainer | null = null;
     addChild = vi.fn((child: any): any => {
@@ -140,8 +147,31 @@ vi.mock('pixi.js', () => {
     eventMode = 'none';
     width = 0;
     height = 0;
-    on = vi.fn((): this => this);
-    off = vi.fn((): this => this);
+    alpha = 1;
+    tint = 0xffffff;
+    anchor = { set: vi.fn() };
+    scale = {
+      x: 1,
+      y: 1,
+      set: vi.fn(function (this: { x: number; y: number }, x: number, y?: number) {
+        this.x = x;
+        this.y = y ?? x;
+      }),
+    };
+    handlers = new Map<string, Set<(e: unknown) => void>>();
+    on = vi.fn((event: string, handler: (e: unknown) => void): this => {
+      let set = this.handlers.get(event);
+      if (set === undefined) {
+        set = new Set();
+        this.handlers.set(event, set);
+      }
+      set.add(handler);
+      return this;
+    });
+    off = vi.fn((event: string, handler: (e: unknown) => void): this => {
+      this.handlers.get(event)?.delete(handler);
+      return this;
+    });
     constructor(_t: unknown) {
       super();
       MockSprite.sInstances.push(this);
@@ -195,7 +225,7 @@ vi.mock('pixi.js', () => {
   };
 });
 
-import { Application, Graphics, Particle, ParticleContainer, Text, Texture } from 'pixi.js';
+import { Application, Graphics, Particle, ParticleContainer, Sprite, Text, Texture } from 'pixi.js';
 
 import {
   ScatterChart,
@@ -222,6 +252,17 @@ const MockGfx = Graphics as unknown as {
 };
 const MockTxt = Text as unknown as { instances: { text: string }[] };
 const MockTex = Texture as unknown as { tInstances: { destroy: ReturnType<typeof vi.fn> }[] };
+const MockSprite = Sprite as unknown as {
+  sInstances: {
+    alpha: number;
+    tint: number;
+    scale: { x: number; y: number; set: (...args: number[]) => void };
+    anchor: { set: ReturnType<typeof vi.fn> };
+    handlers: Map<string, Set<(e: unknown) => void>>;
+    position: { x: number; y: number };
+    eventMode: string;
+  }[];
+};
 
 function makeContainer(width = 800, height = 600): HTMLElement {
   const el = document.createElement('div');
@@ -258,6 +299,7 @@ beforeEach(() => {
   MockGfx.gInstances = [];
   MockTxt.instances = [];
   MockTex.tInstances = [];
+  MockSprite.sInstances = [];
 });
 
 describe('ScatterChart — construction', () => {
@@ -492,5 +534,128 @@ describe('ScatterChart — destroy', () => {
     expect(chart.destroyed).toBe(true);
     expect(texture.destroy).toHaveBeenCalledWith(true);
     expect(MockApp.instances[0]!.destroy).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Hover decoration                                                           *
+ * -------------------------------------------------------------------------- */
+
+interface PointerEvt {
+  button: number;
+  client: { x: number; y: number };
+  getLocalPosition: (s: unknown) => { x: number; y: number };
+}
+function makePointerEvent(local: { x: number; y: number }, client = local): PointerEvt {
+  return { button: 0, client, getLocalPosition: () => local };
+}
+function fireOnInteractionSprite(eventName: string, evt: PointerEvt): void {
+  const target = MockSprite.sInstances.find((s) => s.handlers.has(eventName));
+  if (target === undefined) throw new Error(`no sprite with handler for ${eventName}`);
+  for (const h of target.handlers.get(eventName)!) h(evt);
+}
+/** Hover overlay = the non-interaction sprite (eventMode 'none', anchor set). */
+function findHoverOverlay(): (typeof MockSprite.sInstances)[number] {
+  const found = MockSprite.sInstances.find(
+    (s) =>
+      s.eventMode === 'none' && (s.anchor.set as ReturnType<typeof vi.fn>).mock.calls.length > 0,
+  );
+  if (found === undefined) throw new Error('hover overlay sprite not found');
+  return found;
+}
+
+describe('ScatterChart — hover decoration', () => {
+  beforeEach(() => {
+    setMediaMatch('(prefers-reduced-motion: reduce)', true);
+  });
+
+  // Custom spec: two points (1,1) and (10,10) — extents nice to [0,10] on
+  // both axes, so first point maps to (72, 482) (10% inset) and last to
+  // (720, 0). The exact pixel projection of these two corners is what we hit.
+  function hoverSpec(): ChartSpec {
+    return {
+      type: 'scatter',
+      data: [
+        { x: 0, y: 0 },
+        { x: 10, y: 10 },
+      ],
+      encoding: {
+        x: { field: 'x', type: 'quantitative' },
+        y: { field: 'y', type: 'quantitative' },
+      },
+      animation: { enter: false },
+    };
+  }
+  // x=0 in [0,10] → 0; y=0 in [0,10] → 536 (bottom).
+  const PT_FIRST = { x: 0, y: 536 };
+  // x=10 → 720; y=10 → 0.
+  const PT_LAST = { x: 720, y: 0 };
+
+  it('creates an invisible overlay sprite (alpha 0, scale 0) after first render', async () => {
+    const chart = new ScatterChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    const overlay = findHoverOverlay();
+    expect(overlay.alpha).toBe(0);
+    expect(overlay.scale.x).toBe(0);
+    expect(overlay.scale.y).toBe(0);
+
+    chart.destroy();
+  });
+
+  it('on hover-enter, overlay positions on the hit, tints with point color, scales 1.5×', async () => {
+    const chart = new ScatterChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(PT_FIRST));
+
+    const overlay = findHoverOverlay();
+    expect(overlay.alpha).toBe(1);
+    // Default radius 4 → baseScale 4/64 = 0.0625; ×1.5 = 0.09375.
+    expect(overlay.scale.x).toBeCloseTo(0.0625 * 1.5, 4);
+    expect(overlay.scale.y).toBeCloseTo(0.0625 * 1.5, 4);
+    expect(overlay.position.x).toBeCloseTo(0, 0);
+    expect(overlay.position.y).toBeCloseTo(536, 0);
+
+    chart.destroy();
+  });
+
+  it('on leave, overlay fades back to alpha 0', async () => {
+    const chart = new ScatterChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(PT_FIRST));
+    fireOnInteractionSprite('pointerleave', makePointerEvent(PT_FIRST));
+
+    const overlay = findHoverOverlay();
+    expect(overlay.alpha).toBe(0);
+
+    chart.destroy();
+  });
+
+  it('rapid first → last point change repositions overlay to last point', async () => {
+    const chart = new ScatterChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(PT_FIRST));
+    fireOnInteractionSprite('pointermove', makePointerEvent(PT_LAST));
+
+    const overlay = findHoverOverlay();
+    expect(overlay.position.x).toBeCloseTo(720, 0);
+    expect(overlay.position.y).toBeCloseTo(0, 0);
+    expect(overlay.alpha).toBe(1);
+
+    chart.destroy();
+  });
+
+  it('destroy() during hover does not throw', async () => {
+    const chart = new ScatterChart({ container: makeContainer(), spec: hoverSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(PT_FIRST));
+    expect(() => {
+      chart.destroy();
+    }).not.toThrow();
+    expect(chart.destroyed).toBe(true);
   });
 });

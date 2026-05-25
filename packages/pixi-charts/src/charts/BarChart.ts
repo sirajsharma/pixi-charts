@@ -37,6 +37,31 @@ import {
  */
 const BAND_PADDING = 0.1;
 
+/** Duration (ms) of hover decoration fade-in / fade-out. */
+const HOVER_ANIMATION_MS = 120;
+/**
+ * Maximum interpolation toward white for a hovered bar. At full hover the
+ * fill is `lightenColor(baseColor, 0.18)` — visibly lighter without losing
+ * series identity.
+ */
+const HOVER_LIGHTEN_AMOUNT = 0.18;
+
+/**
+ * Interpolate a `0xRRGGBB` color toward white by factor `t` in `[0, 1]`.
+ * `t = 0` returns the original color; `t = 1` returns white.
+ *
+ * @internal
+ */
+function lightenColor(color: number, t: number): number {
+  const r = (color >> 16) & 0xff;
+  const g = (color >> 8) & 0xff;
+  const b = color & 0xff;
+  const lr = Math.round(r + (255 - r) * t);
+  const lg = Math.round(g + (255 - g) * t);
+  const lb = Math.round(b + (255 - b) * t);
+  return (lr << 16) | (lg << 8) | lb;
+}
+
 /** Bar orientation. See {@link BarChart} and `ChartOptions.orientation`. */
 type Orientation = 'vertical' | 'horizontal';
 
@@ -139,6 +164,28 @@ export class BarChart extends Chart {
   private tooltip: Tooltip | null = null;
   private interactionLayer: InteractionLayer<BarRecord> | null = null;
   private legend: Legend | null = null;
+  /**
+   * The single {@link Graphics} that draws every bar. Hoisted to a class
+   * field so the hover-tween redraw can reach it from
+   * {@link redrawBars} without re-running {@link drawBars}.
+   */
+  private barsGraphics: Graphics | null = null;
+  /**
+   * Current enter-animation progress (0 = collapsed onto baseline, 1 = full
+   * extent). Held as a field so the hover redraw can paint bars at the same
+   * extent the enter tween is targeting — if a hover happens during enter,
+   * bars don't snap to full extent.
+   */
+  private enterProgress = 0;
+  /**
+   * The bar currently under the pointer. Reference identity (the same
+   * {@link BarRecord} instance held in {@link records}) is the cancel-key
+   * for {@link applyHoverDecoration}.
+   */
+  private hoveredRecord: BarRecord | null = null;
+  /** Current hover-fade progress (0 = base color, 1 = fully lightened). */
+  private hoverProgress = 0;
+  private hoverAnimationCancel: (() => void) | null = null;
   /** Tracks whether the first render has happened (resize skips the enter animation). */
   private didInitialRender = false;
 
@@ -212,6 +259,14 @@ export class BarChart extends Chart {
     // next tick draws into a just-destroyed Graphics and crashes. (Unit tests
     // miss it — the mock ResizeObserver never auto-fires during a live tween.)
     this.cancelAllTweens();
+
+    // Hover state references objects in the about-to-be-destroyed
+    // plotContainer; drop them so the next hover starts clean.
+    this.barsGraphics = null;
+    this.enterProgress = 0;
+    this.hoveredRecord = null;
+    this.hoverProgress = 0;
+    this.hoverAnimationCancel = null;
 
     if (this.plotContainer !== null) {
       stage.removeChild(this.plotContainer);
@@ -491,37 +546,58 @@ export class BarChart extends Chart {
    */
   private drawBars(): void {
     if (this.barsContainer === null) return;
-    const bandAdapter = this.bandAdapter;
-    const valueAdapter = this.valueAdapter;
-    if (bandAdapter === null || valueAdapter === null) return;
 
     const graphics = new Graphics();
     this.barsContainer.addChild(graphics);
-
-    const baseline = valueAdapter.scale(0);
-
-    const renderAt = (progress: number): void => {
-      graphics.clear();
-      for (const record of this.records) {
-        const r = this.barRect(record, bandAdapter, valueAdapter, baseline, progress);
-        graphics.rect(r.x, r.y, r.width, r.height).fill({ color: record.color, alpha: 1 });
-      }
-    };
+    this.barsGraphics = graphics;
 
     const enter = this.spec.animation?.enter ?? true;
     const animate = enter !== false && !this.didInitialRender;
     const enterOptions = typeof enter === 'object' ? enter : {};
 
     if (!animate || this.app === null) {
-      renderAt(1);
+      this.enterProgress = 1;
+      this.redrawBars();
       return;
     }
 
-    const tweenOpts: Parameters<typeof tween>[1] = { onUpdate: renderAt };
+    const tweenOpts: Parameters<typeof tween>[1] = {
+      onUpdate: (p) => {
+        this.enterProgress = p;
+        this.redrawBars();
+      },
+    };
     if (enterOptions.duration !== undefined) tweenOpts.duration = enterOptions.duration;
     if (enterOptions.ease !== undefined) tweenOpts.ease = enterOptions.ease;
     const cancel = tween(this.app.ticker, tweenOpts);
     this.addTween(cancel);
+  }
+
+  /**
+   * Clear and redraw every bar into {@link barsGraphics} using the current
+   * {@link enterProgress} and hover state ({@link hoveredRecord} +
+   * {@link hoverProgress}). Called on every frame of both the enter tween
+   * and the hover tween — typical bar counts (5–50) keep this cheap.
+   *
+   * @internal
+   */
+  private redrawBars(): void {
+    const graphics = this.barsGraphics;
+    const bandAdapter = this.bandAdapter;
+    const valueAdapter = this.valueAdapter;
+    if (graphics === null || bandAdapter === null || valueAdapter === null) return;
+
+    const baseline = valueAdapter.scale(0);
+    const hovered = this.hoveredRecord;
+    const lighten = this.hoverProgress * HOVER_LIGHTEN_AMOUNT;
+    const enterProgress = this.enterProgress;
+
+    graphics.clear();
+    for (const record of this.records) {
+      const r = this.barRect(record, bandAdapter, valueAdapter, baseline, enterProgress);
+      const fill = record === hovered ? lightenColor(record.color, lighten) : record.color;
+      graphics.rect(r.x, r.y, r.width, r.height).fill({ color: fill, alpha: 1 });
+    }
   }
 
   /**
@@ -567,6 +643,9 @@ export class BarChart extends Chart {
     let lastTooltipContent: string | null = null;
     const handleEvent = (event: InteractionEvent<BarRecord>): void => {
       if (event.type === 'hover') {
+        if (event.isNewDatum) {
+          this.applyHoverDecoration(event.datum);
+        }
         if (this.tooltip !== null) {
           if (event.isNewDatum || lastTooltipContent === null) {
             lastTooltipContent = this.formatTooltip(event.datum);
@@ -581,6 +660,7 @@ export class BarChart extends Chart {
           });
         }
       } else if (event.type === 'leave') {
+        this.clearHoverDecoration();
         this.tooltip?.hide();
         lastTooltipContent = null;
       }
@@ -606,6 +686,74 @@ export class BarChart extends Chart {
     const valueField =
       this.orientation === 'horizontal' ? (enc.x?.field ?? 'value') : (enc.y?.field ?? 'value');
     return formatCategoryValueTooltip(categoryField, record.category, valueField, record.value);
+  }
+
+  /**
+   * Begin lightening the hovered bar. Cancels any in-flight hover fade so
+   * rapid bar-to-bar movement reads as cancel-and-restart — the previous
+   * bar drops back to base instantly and the new bar starts fading toward
+   * lit. (`tween()`'s reduced-motion shortcut still applies: under reduced
+   * motion the new bar snaps to fully lit.)
+   *
+   * @internal
+   */
+  private applyHoverDecoration(record: BarRecord): void {
+    if (this.app === null) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+    // Switching to a new bar resets the previous bar to base — the lighten
+    // factor is owned by `hoveredRecord`, so reassigning is enough.
+    this.hoveredRecord = record;
+    this.hoverProgress = 0;
+    this.redrawBars();
+
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        this.hoverProgress = p;
+        this.redrawBars();
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
+  }
+
+  /**
+   * Fade the hovered bar back to its base color. Leaves {@link hoveredRecord}
+   * referenced through the fade so the redraw still targets the correct bar;
+   * cleared once the tween reaches 0.
+   *
+   * @internal
+   */
+  private clearHoverDecoration(): void {
+    if (this.app === null || this.hoveredRecord === null) return;
+
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+
+    const start = this.hoverProgress;
+    if (start === 0) {
+      this.hoveredRecord = null;
+      return;
+    }
+
+    const cancel = tween(this.app.ticker, {
+      duration: HOVER_ANIMATION_MS,
+      onUpdate: (p) => {
+        this.hoverProgress = start * (1 - p);
+        this.redrawBars();
+        if (p >= 1) {
+          this.hoveredRecord = null;
+        }
+      },
+    });
+    this.hoverAnimationCancel = cancel;
+    this.addTween(cancel);
   }
 }
 

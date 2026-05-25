@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setMediaMatch } from '../setup.js';
+
 /**
  * Mock pixi.js at the module boundary — happy-dom has no WebGL. Same shape
  * as `LineChart.test.ts`'s mock; the area chart's compositional behaviour
@@ -10,7 +12,14 @@ vi.mock('pixi.js', () => {
   class MockContainer {
     static instances: MockContainer[] = [];
     children: any[] = [];
-    position = { set: vi.fn((_x: number, _y: number) => undefined), x: 0, y: 0 };
+    position = {
+      x: 0,
+      y: 0,
+      set: vi.fn(function (this: { x: number; y: number }, x: number, y: number) {
+        this.x = x;
+        this.y = y;
+      }),
+    };
     destroyed = false;
     parent: MockContainer | null = null;
     addChild = vi.fn((child: any): any => {
@@ -44,11 +53,13 @@ vi.mock('pixi.js', () => {
     strokeCalls: { color?: number; width?: number; alpha?: number }[] = [];
     moveToCalls: { x: number; y: number }[] = [];
     lineToCalls: { x: number; y: number }[] = [];
+    circleCalls: { x: number; y: number; r: number }[] = [];
     closePathCalls = 0;
     clear = vi.fn((): this => {
       this.clearCalls += 1;
       this.moveToCalls = [];
       this.lineToCalls = [];
+      this.circleCalls = [];
       return this;
     });
     moveTo = vi.fn((x: number, y: number): this => {
@@ -57,6 +68,10 @@ vi.mock('pixi.js', () => {
     });
     lineTo = vi.fn((x: number, y: number): this => {
       this.lineToCalls.push({ x, y });
+      return this;
+    });
+    circle = vi.fn((x: number, y: number, r: number): this => {
+      this.circleCalls.push({ x, y, r });
       return this;
     });
     closePath = vi.fn((): this => {
@@ -100,6 +115,9 @@ vi.mock('pixi.js', () => {
   class MockSprite extends MockContainer {
     static sInstances: MockSprite[] = [];
     eventMode = 'none';
+    width = 0;
+    height = 0;
+    scale = { x: 1, y: 1 };
     handlers = new Map<string, Set<(e: unknown) => void>>();
     on = vi.fn((event: string, handler: (e: unknown) => void): this => {
       let set = this.handlers.get(event);
@@ -182,7 +200,12 @@ type MockGfx = {
   parent: { children: unknown[] } | null;
   destroyed: boolean;
 };
-type MockSpriteT = { width: number; height: number; eventMode: string };
+type MockSpriteT = {
+  width: number;
+  height: number;
+  eventMode: string;
+  handlers: Map<string, Set<(e: unknown) => void>>;
+};
 type MockTxt = { text: string; destroyed: boolean };
 type MockContainerT = { children: unknown[]; destroyed: boolean };
 type MockApp = {
@@ -513,5 +536,135 @@ describe('AreaChart — destroy', () => {
     chart.destroy();
     chart.destroy();
     expect(MockApp.instances[0]!.destroy).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Hover decoration                                                           *
+ * -------------------------------------------------------------------------- */
+
+interface PointerEvt {
+  button: number;
+  client: { x: number; y: number };
+  getLocalPosition: (s: unknown) => { x: number; y: number };
+}
+function makePointerEvent(local: { x: number; y: number }, client = local): PointerEvt {
+  return { button: 0, client, getLocalPosition: () => local };
+}
+function fireOnInteractionSprite(eventName: string, evt: PointerEvt): void {
+  const target = MockSprite.sInstances.find((s) => s.handlers.has(eventName));
+  if (target === undefined) throw new Error(`no sprite with handler for ${eventName}`);
+  for (const h of target.handlers.get(eventName)!) h(evt);
+}
+function findHoverMarker(): MockGfx & { alpha?: number; position: { x: number; y: number } } {
+  const all = MockGraphics.gInstances as unknown as (MockGfx & {
+    alpha?: number;
+    position: { x: number; y: number };
+  })[];
+  // The hover marker is the only Graphics with no lineTo (axes/areas use
+  // lineTo; the marker only uses circle + fill) and an explicitly-set alpha.
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const g = all[i]!;
+    if (g.lineToCalls.length === 0 && g.alpha !== undefined) return g;
+  }
+  throw new Error('hover marker Graphics not found');
+}
+
+describe('AreaChart — hover decoration', () => {
+  beforeEach(() => {
+    setMediaMatch('(prefers-reduced-motion: reduce)', true);
+  });
+
+  // Same data shape as the makeSpec default: x ∈ [0, 3], y ∈ {10, 30, 20, 50}.
+  // Plot is 720 × 536 with default margins; y-scale nices to [0, 50].
+  const DATUM_0 = { x: 0, y: 429 };
+  const DATUM_3 = { x: 720, y: 0 };
+
+  it('creates an invisible hover marker (alpha 0) after first render', async () => {
+    const container = makeContainer();
+    const chart = new AreaChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const marker = findHoverMarker();
+    expect(marker.alpha).toBe(0);
+
+    chart.destroy();
+  });
+
+  it('on hover-enter, marker draws a circle and animates to alpha 1', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new AreaChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+
+    const marker = findHoverMarker();
+    expect(marker.alpha).toBe(1);
+    const circleCalls = (marker as unknown as { circleCalls: { r: number }[] }).circleCalls;
+    expect(circleCalls.length).toBeGreaterThan(0);
+    expect(circleCalls[circleCalls.length - 1]!.r).toBe(6);
+
+    chart.destroy();
+  });
+
+  it('isNewDatum=false (move within same datum) does NOT redraw the marker', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new AreaChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+    const marker = findHoverMarker();
+    const before = (marker as unknown as { circleCalls: unknown[] }).circleCalls.length;
+
+    fireOnInteractionSprite('pointermove', makePointerEvent({ x: 1, y: 428 }));
+
+    const after = (marker as unknown as { circleCalls: unknown[] }).circleCalls.length;
+    expect(after).toBe(before);
+
+    chart.destroy();
+  });
+
+  it('on leave, marker fades back to alpha 0', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new AreaChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+    fireOnInteractionSprite('pointerleave', makePointerEvent(DATUM_0));
+
+    const marker = findHoverMarker();
+    expect(marker.alpha).toBe(0);
+
+    chart.destroy();
+  });
+
+  it('rapid A → B datum change cancels A and ends at B', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new AreaChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+    const marker = findHoverMarker();
+    const xAfterA = marker.position.x;
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_3));
+
+    expect(marker.position.x).not.toBe(xAfterA);
+    expect(marker.position.x).toBeGreaterThan(700);
+    expect(marker.alpha).toBe(1);
+
+    chart.destroy();
+  });
+
+  it('destroy() during hover does not throw', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new AreaChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    fireOnInteractionSprite('pointermove', makePointerEvent(DATUM_0));
+    expect(() => {
+      chart.destroy();
+    }).not.toThrow();
+    expect(chart.destroyed).toBe(true);
   });
 });
