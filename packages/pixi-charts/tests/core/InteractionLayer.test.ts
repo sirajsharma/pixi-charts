@@ -32,6 +32,7 @@ vi.mock('pixi.js', () => {
     parent: MockContainer | null = null;
     width = 0;
     height = 0;
+    scale = { x: 1, y: 1 };
     eventMode = 'none';
     destroyed = false;
     handlers = new Map<string, Set<(event: unknown) => void>>();
@@ -108,27 +109,60 @@ describe('handlePointerSample', () => {
   const datumA = { id: 'a' };
   const datumB = { id: 'b' };
 
-  it('move: hit a new datum with no prior → emits hover and stores it', () => {
+  it('move: hit a new datum with no prior → emits hover with isNewDatum=true and stores it', () => {
     const state = { lastDatum: null as typeof datumA | null };
     const result = handlePointerSample(state, 'move', point, globalPosition, () => datumA, true);
 
-    expect(result).toEqual({ type: 'hover', datum: datumA, position: point, globalPosition });
+    expect(result).toEqual({
+      type: 'hover',
+      datum: datumA,
+      position: point,
+      globalPosition,
+      isNewDatum: true,
+    });
     expect(state.lastDatum).toBe(datumA);
   });
 
-  it('move: hit the same datum as before → dedupes (returns null)', () => {
+  it('move: hit the same datum as before → emits hover with isNewDatum=false', () => {
     const state = { lastDatum: datumA as typeof datumA | null };
     const result = handlePointerSample(state, 'move', point, globalPosition, () => datumA, true);
 
-    expect(result).toBeNull();
+    expect(result).toEqual({
+      type: 'hover',
+      datum: datumA,
+      position: point,
+      globalPosition,
+      isNewDatum: false,
+    });
     expect(state.lastDatum).toBe(datumA);
   });
 
-  it('move: hit a different datum → emits hover for the new datum', () => {
+  it('move: in-datum move with different point coords → event.position reflects the new point', () => {
+    const state = { lastDatum: datumA as typeof datumA | null };
+    const newPoint: Point = { x: 99, y: 88 };
+    const newGlobal: Point = { x: 199, y: 188 };
+    const result = handlePointerSample(state, 'move', newPoint, newGlobal, () => datumA, true);
+
+    expect(result).toEqual({
+      type: 'hover',
+      datum: datumA,
+      position: newPoint,
+      globalPosition: newGlobal,
+      isNewDatum: false,
+    });
+  });
+
+  it('move: hit a different datum → emits hover with isNewDatum=true for the new datum', () => {
     const state = { lastDatum: datumA as typeof datumA | null };
     const result = handlePointerSample(state, 'move', point, globalPosition, () => datumB, true);
 
-    expect(result).toEqual({ type: 'hover', datum: datumB, position: point, globalPosition });
+    expect(result).toEqual({
+      type: 'hover',
+      datum: datumB,
+      position: point,
+      globalPosition,
+      isNewDatum: true,
+    });
     expect(state.lastDatum).toBe(datumB);
   });
 
@@ -277,10 +311,11 @@ describe('InteractionLayer — event dispatch', () => {
       datum,
       position: { x: 25, y: 35 },
       globalPosition: { x: 125, y: 235 },
+      isNewDatum: true,
     });
   });
 
-  it('two consecutive moves over the same datum fire ONE hover (dedup)', () => {
+  it('two consecutive moves over the same datum fire two hovers; second has isNewDatum=false', () => {
     const stage = new Container();
     const onEvent = vi.fn<(event: InteractionEvent<TestDatum>) => void>();
     const datum: TestDatum = { id: 'p1' };
@@ -296,10 +331,16 @@ describe('InteractionLayer — event dispatch', () => {
     fire(0, 'pointermove', makeEvent({ local: { x: 10, y: 10 } }));
     fire(0, 'pointermove', makeEvent({ local: { x: 12, y: 11 } }));
 
-    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(onEvent).toHaveBeenCalledTimes(2);
+    expect(onEvent.mock.calls[0]![0]).toMatchObject({ type: 'hover', isNewDatum: true });
+    expect(onEvent.mock.calls[1]![0]).toMatchObject({
+      type: 'hover',
+      isNewDatum: false,
+      position: { x: 12, y: 11 },
+    });
   });
 
-  it('moving from datum A to datum B fires hover for B', () => {
+  it('moving from datum A to datum B fires hover for B with isNewDatum=true', () => {
     const stage = new Container();
     const onEvent = vi.fn<(event: InteractionEvent<TestDatum>) => void>();
     const datumA: TestDatum = { id: 'a' };
@@ -319,7 +360,11 @@ describe('InteractionLayer — event dispatch', () => {
     fire(0, 'pointermove', makeEvent({ local: { x: 30, y: 30 } }));
 
     expect(onEvent).toHaveBeenCalledTimes(2);
-    expect(onEvent.mock.calls[1]![0]).toMatchObject({ type: 'hover', datum: datumB });
+    expect(onEvent.mock.calls[1]![0]).toMatchObject({
+      type: 'hover',
+      datum: datumB,
+      isNewDatum: true,
+    });
   });
 
   it('pointermove returning null does NOT fire when no prior datum was hovered', () => {
@@ -455,7 +500,9 @@ describe('InteractionLayer — resize and setHitTester', () => {
     fire(0, 'pointermove', makeEvent({ local: { x: 6, y: 6 } }));
 
     expect(onEvent).toHaveBeenCalledTimes(1);
-    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'hover', datum }));
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'hover', datum, isNewDatum: true }),
+    );
   });
 });
 

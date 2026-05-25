@@ -6,7 +6,11 @@ export interface Point {
   y: number;
 }
 
-/** Fired when the pointer enters a new datum (or moves between datums). */
+/**
+ * Fired on every `pointermove` while the pointer is over a datum — both when
+ * the datum changes *and* when the cursor moves within the same datum's hit
+ * region. Consumers distinguish the two via {@link HoverEvent.isNewDatum}.
+ */
 export interface HoverEvent<D> {
   type: 'hover';
   /** The datum returned by the hit-tester for the current pointer position. */
@@ -15,6 +19,15 @@ export interface HoverEvent<D> {
   position: Point;
   /** Pointer position in page coordinates, suitable for positioning a DOM tooltip. */
   globalPosition: Point;
+  /**
+   * `true` if the cursor entered a new datum (datum differs from the previous
+   * hover, or this is the first hover after a `leave` / hit-tester swap).
+   * `false` if still over the same datum as the last hover — i.e. this is a
+   * position update for the same datum. Use this flag to skip expensive
+   * content re-renders (`formatTooltip`, etc.) while still letting position
+   * updates flow through.
+   */
+  isNewDatum: boolean;
 }
 
 /** Fired on a primary-button (button 0) pointerdown that hits a datum. */
@@ -84,10 +97,13 @@ interface HoverState<D> {
  * pointer events to this helper. Mutates `state` in place.
  *
  * Behavior:
- * - `move`: if hit returns a datum different from `lastDatum`, emit `hover`
- *   and update `lastDatum`. If hit returns the same datum, return `null`
- *   (deduplication). If hit returns `null` and we had a prior datum, emit
- *   `leave` and clear `lastDatum`.
+ * - `move`: if hit returns a datum, emit `hover` with `isNewDatum` set to
+ *   `true` when the datum differs from `lastDatum` (or `lastDatum` is null)
+ *   and `false` when it's the same reference; `lastDatum` is updated to the
+ *   current datum. If hit returns `null` and we had a prior datum, emit
+ *   `leave` and clear `lastDatum`. The flag preserves the content-dedup
+ *   intent (consumers skip re-rendering identical tooltip content) while
+ *   letting position updates flow on every sample.
  * - `down`: only emits when `isPrimaryButton` is true AND hit returns a
  *   datum. State is not touched (a click never implies a hover transition).
  * - `leave`: if we had a prior datum, emit `leave` and clear `lastDatum`.
@@ -126,11 +142,9 @@ export function handlePointerSample<D>(
     }
     return null;
   }
-  if (Object.is(datum, state.lastDatum)) {
-    return null;
-  }
+  const isNewDatum = !Object.is(datum, state.lastDatum);
   state.lastDatum = datum;
-  return { type: 'hover', datum, position: point, globalPosition };
+  return { type: 'hover', datum, position: point, globalPosition, isNewDatum };
 }
 
 /**
@@ -261,7 +275,10 @@ export class InteractionLayer<D> {
   /** @internal */
   private dispatch(kind: PointerKind, event: FederatedPointerEvent, isPrimary: boolean): void {
     const local = event.getLocalPosition(this.sprite);
-    const point: Point = { x: local.x, y: local.y };
+    const point: Point = {
+      x: local.x * this.sprite.scale.x,
+      y: local.y * this.sprite.scale.y,
+    };
     const globalPosition: Point = { x: event.client.x, y: event.client.y };
     const emitted = handlePointerSample(
       this.state,

@@ -378,20 +378,25 @@ export class AreaChart extends Chart {
     }
 
     const hitTester = this.buildHitTester();
+    let lastTooltipContent: string | null = null;
     const handleEvent = (event: InteractionEvent<CartesianHit>): void => {
       if (event.type === 'hover') {
         if (this.tooltip !== null) {
+          if (event.isNewDatum || lastTooltipContent === null) {
+            lastTooltipContent = this.formatTooltip(event.datum);
+          }
           const rect = this.container.getBoundingClientRect();
           const localX = event.globalPosition.x - rect.left;
           const localY = event.globalPosition.y - rect.top;
           this.tooltip.show({
             x: localX,
             y: localY,
-            content: this.formatTooltip(event.datum),
+            content: lastTooltipContent,
           });
         }
       } else if (event.type === 'leave') {
         this.tooltip?.hide();
+        lastTooltipContent = null;
       }
       // click: no-op for v1.
     };

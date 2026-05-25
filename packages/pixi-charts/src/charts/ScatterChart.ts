@@ -727,18 +727,23 @@ export class ScatterChart extends Chart {
     const hitTester: HitTester<ScatterRecord> =
       index === null ? () => null : buildScatterHitTester(index, hitRadius);
 
+    let lastTooltipContent: string | null = null;
     const handleEvent = (event: InteractionEvent<ScatterRecord>): void => {
       if (event.type === 'hover') {
         if (this.tooltip !== null) {
+          if (event.isNewDatum || lastTooltipContent === null) {
+            lastTooltipContent = this.formatTooltip(event.datum);
+          }
           const rect = this.container.getBoundingClientRect();
           this.tooltip.show({
             x: event.globalPosition.x - rect.left,
             y: event.globalPosition.y - rect.top,
-            content: this.formatTooltip(event.datum),
+            content: lastTooltipContent,
           });
         }
       } else if (event.type === 'leave') {
         this.tooltip?.hide();
+        lastTooltipContent = null;
       }
       // click: no-op for v1 (wired so a future handler drops in cleanly).
     };
