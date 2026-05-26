@@ -4,13 +4,13 @@
   "description": "A WebGL-rendered TypeScript charting library built on PixiJS and D3 submodules. Designed for 60fps on 100k+ data points.",
   "license": "MIT",
   "author": "Siraj Sharma",
-  "homepage": "https://github.com/TODO/pixi-charts#readme",
+  "homepage": "https://github.com/sirajsharma/pixi-charts#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TODO/pixi-charts.git"
+    "url": "git+https://github.com/sirajsharma/pixi-charts.git"
   },
   "bugs": {
-    "url": "https://github.com/TODO/pixi-charts/issues"
+    "url": "https://github.com/sirajsharma/pixi-charts/issues"
   },
   "keywords": [
     "charts",
@@ -76,6 +76,7 @@
     "pixi.js": "^8.5.1",
     "tsup": "^8.3.0",
     "typedoc": "^0.26.10",
+    "vite": "^8.0.14",
     "vitest": "^2.1.3"
   }
 }

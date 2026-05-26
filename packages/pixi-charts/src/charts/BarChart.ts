@@ -452,6 +452,11 @@ export class BarChart extends Chart {
     let xAxis: Axis<string> | Axis<number>;
     let yAxis: Axis<string> | Axis<number>;
 
+    const showChrome = this.spec.options?.showAxes ?? true;
+    const showGrid = this.spec.options?.showGrid ?? true;
+    const xTitle = this.spec.options?.axisTitles?.x;
+    const yTitle = this.spec.options?.axisTitles?.y;
+
     if (this.orientation === 'horizontal') {
       bandScale.range([0, plotHeight]);
       valueScale.range([0, plotWidth]);
@@ -463,13 +468,17 @@ export class BarChart extends Chart {
         orientation: 'bottom',
         length: plotWidth,
         tickFormat: (v) => d3format('~s')(v),
-        showGrid: true,
+        showGrid,
         gridLength: plotHeight,
+        showChrome,
+        ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
       });
       yAxis = new Axis<string>({
         scale: bAdapter,
         orientation: 'left',
         length: plotHeight,
+        showChrome,
+        ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
       });
     } else {
       bandScale.range([0, plotWidth]);
@@ -481,14 +490,18 @@ export class BarChart extends Chart {
         scale: bAdapter,
         orientation: 'bottom',
         length: plotWidth,
+        showChrome,
+        ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
       });
       yAxis = new Axis<number>({
         scale: vAdapter,
         orientation: 'left',
         length: plotHeight,
         tickFormat: (v) => d3format('~s')(v),
-        showGrid: true,
+        showGrid,
         gridLength: plotWidth,
+        showChrome,
+        ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
       });
     }
 

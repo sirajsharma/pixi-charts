@@ -423,15 +423,22 @@ export class HeatmapChart extends Chart {
     // Build axes. First chart with band on BOTH axes — see Axis.ts:
     // `computeTickData` already half-offsets band labels via `bandwidth()/2`,
     // so labels sit centred over their cells without special-casing here.
+    const showChrome = this.spec.options?.showAxes ?? true;
+    const xTitle = this.spec.options?.axisTitles?.x;
+    const yTitle = this.spec.options?.axisTitles?.y;
     const xAxis = new Axis<string>({
       scale: xAdapter,
       orientation: 'bottom',
       length: plotWidth,
+      showChrome,
+      ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
     });
     const yAxis = new Axis<string>({
       scale: yAdapter,
       orientation: 'left',
       length: plotHeight,
+      showChrome,
+      ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
     });
     this.xAxis = xAxis;
     this.yAxis = yAxis;

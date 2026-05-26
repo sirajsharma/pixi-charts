@@ -63,6 +63,11 @@ vi.mock('pixi.js', () => {
     text: string;
     style: Record<string, unknown>;
     destroyed = false;
+    rotation = 0;
+    // Approximate dimensions so positioning math (e.g. axis-title placement)
+    // computes finite values under happy-dom, which has no real text metrics.
+    width: number;
+    height: number;
     anchor = { set: vi.fn((_x: number, _y: number): void => undefined) };
     position = { set: vi.fn((_x: number, _y: number): void => undefined) };
     destroy = vi.fn((): void => {
@@ -71,6 +76,9 @@ vi.mock('pixi.js', () => {
     constructor(opts: { text: string; style: Record<string, unknown> }) {
       this.text = opts.text;
       this.style = opts.style;
+      const fontSize = typeof opts.style.fontSize === 'number' ? opts.style.fontSize : 11;
+      this.width = Math.max(1, opts.text.length) * fontSize * 0.6;
+      this.height = fontSize * 1.2;
       MockText.instances.push(this);
     }
   }
@@ -99,6 +107,9 @@ type MockTextStatic = {
   instances: {
     text: string;
     style: Record<string, unknown>;
+    rotation: number;
+    width: number;
+    height: number;
     anchor: { set: ReturnType<typeof vi.fn> };
     position: { set: ReturnType<typeof vi.fn> };
     destroyed: boolean;
@@ -347,6 +358,188 @@ describe('Axis — destroy()', () => {
     expect(() => {
       axis.update({ length: 300 });
     }).toThrow(/cannot update\(\) after destroy/);
+  });
+});
+
+describe('Axis — title rendering', () => {
+  it('renders a Text child whose text matches the title option', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'bottom',
+      length: 200,
+      title: 'Revenue (USD)',
+    });
+
+    const titleTexts = MockText.instances.filter((t) => t.text === 'Revenue (USD)');
+    expect(titleTexts).toHaveLength(1);
+  });
+
+  it('does NOT render a title Text when title is undefined', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 200 });
+
+    // Only tick labels — every Text should be a numeric tick label, none bold.
+    const bolds = MockText.instances.filter((t) => t.style.fontWeight === '600');
+    expect(bolds).toHaveLength(0);
+  });
+
+  it('does NOT render a title Text when title is an empty string', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'bottom',
+      length: 200,
+      title: '',
+    });
+
+    const bolds = MockText.instances.filter((t) => t.style.fontWeight === '600');
+    expect(bolds).toHaveLength(0);
+  });
+
+  it('styles the title with bold weight and a larger font size than tick labels', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'bottom',
+      length: 200,
+      title: 'X',
+      fontSize: 11,
+    });
+    const title = MockText.instances.find((t) => t.text === 'X')!;
+    expect(title.style.fontWeight).toBe('600');
+    expect(title.style.fontSize).toBe(14); // fontSize + 3
+  });
+
+  it('positions the bottom-orientation title below the axis line (positive y)', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'bottom',
+      length: 200,
+      title: 'X',
+    });
+    const title = MockText.instances.find((t) => t.text === 'X')!;
+    const [x, y] = title.position.set.mock.calls[0]!;
+    expect(x).toBeCloseTo(100); // length / 2
+    expect(y).toBeGreaterThan(0);
+    expect(title.rotation).toBe(0);
+  });
+
+  it('positions the top-orientation title above the axis line (negative y)', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'top',
+      length: 200,
+      title: 'X',
+    });
+    const title = MockText.instances.find((t) => t.text === 'X')!;
+    const [, y] = title.position.set.mock.calls[0]!;
+    expect(y).toBeLessThan(0);
+    expect(title.rotation).toBe(0);
+  });
+
+  it('rotates the left-orientation title -π/2 and places it left of the axis line', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'left',
+      length: 200,
+      title: 'Y',
+    });
+    const title = MockText.instances.find((t) => t.text === 'Y')!;
+    const [x, y] = title.position.set.mock.calls[0]!;
+    expect(x).toBeLessThan(0);
+    expect(y).toBeCloseTo(100); // length / 2
+    expect(title.rotation).toBeCloseTo(-Math.PI / 2);
+  });
+
+  it('rotates the right-orientation title +π/2 and places it right of the axis line', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'right',
+      length: 200,
+      title: 'Y',
+    });
+    const title = MockText.instances.find((t) => t.text === 'Y')!;
+    const [x] = title.position.set.mock.calls[0]!;
+    expect(x).toBeGreaterThan(0);
+    expect(title.rotation).toBeCloseTo(Math.PI / 2);
+  });
+
+  it('honours custom titleFontSize and titleColor', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'bottom',
+      length: 200,
+      title: 'X',
+      titleFontSize: 18,
+      titleColor: 0xff0000,
+    });
+    const title = MockText.instances.find((t) => t.text === 'X')!;
+    expect(title.style.fontSize).toBe(18);
+    expect(title.style.fill).toBe(0xff0000);
+  });
+
+  it('destroys the title Text cleanly on destroy()', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    const axis = new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'bottom',
+      length: 200,
+      title: 'X',
+    });
+    const title = MockText.instances.find((t) => t.text === 'X')!;
+    axis.destroy();
+    expect(title.destroyed).toBe(true);
+  });
+});
+
+describe('Axis — chrome-less mode (showChrome: false)', () => {
+  it('renders only gridlines when showChrome is false and showGrid is true', () => {
+    const scale = scaleBand().domain(['a', 'b', 'c']).range([0, 300]);
+    new Axis({
+      scale: bandAdapter(scale),
+      orientation: 'bottom',
+      length: 300,
+      showChrome: false,
+      showGrid: true,
+      gridLength: 200,
+    });
+
+    // Three gridline Graphics, no axis line, no tick marks, no labels.
+    expect(MockGraphics.instances).toHaveLength(3);
+    expect(MockText.instances).toHaveLength(0);
+  });
+
+  it('renders nothing when both showChrome and showGrid are false', () => {
+    const scale = scaleBand().domain(['a', 'b', 'c']).range([0, 300]);
+    new Axis({
+      scale: bandAdapter(scale),
+      orientation: 'bottom',
+      length: 300,
+      showChrome: false,
+      showGrid: false,
+    });
+
+    expect(MockGraphics.instances).toHaveLength(0);
+    expect(MockText.instances).toHaveLength(0);
+  });
+
+  it('skips title rendering when showChrome is false even if title is set', () => {
+    const scale = scaleLinear().domain([0, 100]).range([0, 200]);
+    new Axis({
+      scale: linearAdapter(scale),
+      orientation: 'bottom',
+      length: 200,
+      showChrome: false,
+      title: 'should not appear',
+    });
+
+    expect(MockText.instances.find((t) => t.text === 'should not appear')).toBeUndefined();
   });
 });
 

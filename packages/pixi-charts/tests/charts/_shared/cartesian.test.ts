@@ -320,6 +320,26 @@ describe('resolve helpers', () => {
     expect(resolveMargin(spec({ options: { margin: { left: 80 } } })).left).toBe(80);
   });
 
+  it('resolveMargin bumps the bottom edge by AXIS_TITLE_SPACE when axisTitles.x is set', () => {
+    const baseline = resolveMargin(spec());
+    const withTitle = resolveMargin(spec({ options: { axisTitles: { x: 'Time' } } }));
+    expect(withTitle.bottom - baseline.bottom).toBe(24);
+    expect(withTitle.left).toBe(baseline.left);
+  });
+
+  it('resolveMargin bumps the left edge by AXIS_TITLE_SPACE when axisTitles.y is set', () => {
+    const baseline = resolveMargin(spec());
+    const withTitle = resolveMargin(spec({ options: { axisTitles: { y: 'Revenue' } } }));
+    expect(withTitle.left - baseline.left).toBe(24);
+    expect(withTitle.bottom).toBe(baseline.bottom);
+  });
+
+  it('resolveMargin does not bump for empty-string titles', () => {
+    const baseline = resolveMargin(spec());
+    const empty = resolveMargin(spec({ options: { axisTitles: { x: '', y: '' } } }));
+    expect(empty).toEqual(baseline);
+  });
+
   it('resolveWidth/Height prefer the option, then container, then the default', () => {
     expect(resolveWidth(spec({ options: { width: 999 } }), el(0, 0))).toBe(999);
     expect(resolveWidth(spec(), el(640, 480))).toBe(640);

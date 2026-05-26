@@ -489,19 +489,28 @@ export class ScatterChart extends Chart {
       };
     });
 
+    const showChrome = this.spec.options?.showAxes ?? true;
+    const showGrid = this.spec.options?.showGrid ?? true;
+    const xTitle = this.spec.options?.axisTitles?.x;
+    const yTitle = this.spec.options?.axisTitles?.y;
+
     const xAxis = new Axis<AxisValue>({
       scale: xAdapter,
       orientation: 'bottom',
       length: plotWidth,
       tickFormat: xTemporal ? (v) => timeFormat('%b %d')(v as Date) : (v) => d3format('~g')(v),
+      showChrome,
+      ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
     });
     const yAxis = new Axis<AxisValue>({
       scale: yAdapter,
       orientation: 'left',
       length: plotHeight,
       tickFormat: yTemporal ? (v) => timeFormat('%b %d')(v as Date) : (v) => d3format('~s')(v),
-      showGrid: true,
+      showGrid,
       gridLength: plotWidth,
+      showChrome,
+      ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
     });
 
     return { records, xAdapter, yAdapter, xAxis, yAxis, maxRadius };

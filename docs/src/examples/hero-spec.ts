@@ -55,6 +55,9 @@ export function makeHeroSpec(pointCount = 30_000): ChartSpec {
     options: {
       showLegend: false,
       showTooltip: false,
+      showAxes: false,
+      showGrid: false,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
     },
     animation: { enter: true },
   };

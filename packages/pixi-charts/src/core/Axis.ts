@@ -39,6 +39,24 @@ export interface AxisOptions<TDomain> {
   fontSize?: number;
   /** Label font family. Default `'sans-serif'`. */
   fontFamily?: string;
+  /**
+   * Whether to render axis chrome (axis line, tick marks, tick labels, and
+   * title). Default `true`. When `false`, only gridlines render (if
+   * `showGrid` is also `true`). Tick *positions* are still computed even in
+   * chrome-less mode so gridlines stay aligned with the data.
+   */
+  showChrome?: boolean;
+  /**
+   * Axis title. When set and chrome is rendered, draws a centered title
+   * outboard of the tick labels — below for `'bottom'`, above for `'top'`,
+   * rotated -90° to the left of `'left'`, rotated +90° to the right of
+   * `'right'`.
+   */
+  title?: string;
+  /** Title font size in CSS pixels. Defaults to `fontSize + 3`. */
+  titleFontSize?: number;
+  /** Title color (PIXI numeric). Defaults to `labelColor`. */
+  titleColor?: number;
 }
 
 const DEFAULT_TICK_COUNT = 5;
@@ -52,6 +70,8 @@ const DEFAULT_LINE_COLOR = 0x888888;
 const DEFAULT_GRID_COLOR = 0xeeeeee;
 const DEFAULT_FONT_SIZE = 11;
 const DEFAULT_FONT_FAMILY = 'sans-serif';
+const TITLE_FONT_WEIGHT = '600';
+const TITLE_GAP = 8;
 
 interface TickData<TDomain> {
   values: readonly TDomain[];
@@ -229,6 +249,10 @@ export class Axis<TDomain> {
       gridColor = DEFAULT_GRID_COLOR,
       fontSize = DEFAULT_FONT_SIZE,
       fontFamily = DEFAULT_FONT_FAMILY,
+      showChrome = true,
+      title,
+      titleFontSize,
+      titleColor,
     } = this.options;
 
     if (showGrid && (gridLength === undefined || gridLength <= 0)) {
@@ -254,6 +278,11 @@ export class Axis<TDomain> {
       }
     }
 
+    // Chrome (axis line, tick marks, tick labels, title) is conditional on
+    // `showChrome`. Gridlines above render unconditionally so a chrome-less
+    // axis can still contribute a grid to the plot.
+    if (!showChrome) return;
+
     // 2) Axis line.
     const axisLine = new Graphics();
     axisLine.moveTo(0, 0).lineTo(geom.axisLineEnd.x, geom.axisLineEnd.y).stroke({
@@ -262,7 +291,10 @@ export class Axis<TDomain> {
     });
     this.container.addChild(axisLine);
 
-    // 3) Tick marks and 4) tick labels, paired per tick.
+    // 3) Tick marks and 4) tick labels, paired per tick. Track the maximum
+    // label extent on the cross-axis so the title can be placed outboard of
+    // every label without overlap.
+    let maxLabelCross = 0;
     for (let i = 0; i < positions.length; i += 1) {
       const p = positions[i];
       const value = values[i];
@@ -291,6 +323,62 @@ export class Axis<TDomain> {
       const ly = geom.axis === 'horizontal' ? geom.labelPos.y : p + geom.labelPos.y;
       label.position.set(lx, ly);
       this.container.addChild(label);
+
+      // For 'bottom'/'top' axes, the label extends along y from `ly`; for
+      // 'left'/'right' axes, the label extends along x from `lx`. We track
+      // the unsigned distance from the axis line so titles can be positioned
+      // by orientation sign separately.
+      const cross = geom.axis === 'horizontal' ? Math.abs(label.height) : Math.abs(label.width);
+      if (cross > maxLabelCross) maxLabelCross = cross;
+    }
+
+    // 5) Axis title (optional). Positioned outboard of the tick labels,
+    // centered on the axis length. Rotation is applied for vertical axes so
+    // the text reads bottom-to-top on 'left' and top-to-bottom on 'right'.
+    if (title !== undefined && title !== '') {
+      const resolvedTitleColor = titleColor ?? labelColor;
+      const resolvedTitleFontSize = titleFontSize ?? fontSize + 3;
+      const titleText = new Text({
+        text: title,
+        style: {
+          fontFamily,
+          fontSize: resolvedTitleFontSize,
+          fontWeight: TITLE_FONT_WEIGHT,
+          fill: resolvedTitleColor,
+        },
+      });
+      titleText.anchor.set(0.5, 0.5);
+
+      // Outboard offset = label extent (from the axis line) + the original
+      // label inset (tick + tick-label offset) + breathing room + half the
+      // title's cross extent so the centered anchor sits clear of the labels.
+      const baseInset = TICK_MARK_LENGTH + TICK_LABEL_OFFSET;
+      switch (orientation) {
+        case 'bottom': {
+          const half = titleText.height / 2;
+          titleText.position.set(length / 2, baseInset + maxLabelCross + TITLE_GAP + half);
+          break;
+        }
+        case 'top': {
+          const half = titleText.height / 2;
+          titleText.position.set(length / 2, -(baseInset + maxLabelCross + TITLE_GAP + half));
+          break;
+        }
+        case 'left': {
+          titleText.rotation = -Math.PI / 2;
+          // After -π/2 rotation, the text's `height` measures along x.
+          const half = titleText.height / 2;
+          titleText.position.set(-(baseInset + maxLabelCross + TITLE_GAP + half), length / 2);
+          break;
+        }
+        case 'right': {
+          titleText.rotation = Math.PI / 2;
+          const half = titleText.height / 2;
+          titleText.position.set(baseInset + maxLabelCross + TITLE_GAP + half, length / 2);
+          break;
+        }
+      }
+      this.container.addChild(titleText);
     }
   }
 }

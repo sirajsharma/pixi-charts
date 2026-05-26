@@ -55,6 +55,13 @@ const marginSchema = z.object({
   left: z.number().optional(),
 });
 
+const axisTitlesSchema = z
+  .object({
+    x: z.string().optional(),
+    y: z.string().optional(),
+  })
+  .strict();
+
 const chartOptionsSchema = z.object({
   title: z.string().optional(),
   showLegend: z.boolean().optional(),
@@ -69,7 +76,16 @@ const chartOptionsSchema = z.object({
   // on non-pie specs that may set them speculatively.
   innerRadius: z.union([z.number(), z.nan()]).optional(),
   startAngle: z.union([z.number(), z.nan()]).optional(),
+  // Axis-rendering options. Inert on `pie` (no axes / no grid); shape is
+  // validated for every spec but the per-type rules below do not consult
+  // them. Empty title strings parse successfully; an over-long title (>100
+  // chars) emits a forward-compat warning instead of rejecting.
+  showAxes: z.boolean().optional(),
+  showGrid: z.boolean().optional(),
+  axisTitles: axisTitlesSchema.optional(),
 });
+
+const AXIS_TITLE_WARN_LENGTH = 100;
 
 /**
  * zod schema mirroring {@link ChartSpec}. Exported for consumers who want
@@ -590,6 +606,24 @@ export function validateChartSpec(input: unknown): ChartSpec {
           `ChartSpec: unknown top-level key "${key}" — ignored. Known keys: ${[
             ...KNOWN_SPEC_KEYS,
           ].join(', ')}.`,
+        );
+      }
+    }
+  }
+
+  // Warn (don't reject) on suspiciously long axis titles. 100+ chars is
+  // almost always a misconfiguration but might be a deliberate stylistic
+  // choice — surface it without forcing a teaching error.
+  const axisTitles = spec.options?.axisTitles;
+  if (axisTitles !== undefined) {
+    for (const channel of ['x', 'y'] as const) {
+      const t = axisTitles[channel];
+      if (t !== undefined && t.length > AXIS_TITLE_WARN_LENGTH) {
+        console.warn(
+          `pixi-charts: options.axisTitles.${channel} is ${String(t.length)} chars long ` +
+            `(>${String(AXIS_TITLE_WARN_LENGTH)}). Long axis titles usually indicate a ` +
+            `misconfiguration — confirm you meant to set this title, otherwise the chart ` +
+            `will reserve a lot of margin for it.`,
         );
       }
     }

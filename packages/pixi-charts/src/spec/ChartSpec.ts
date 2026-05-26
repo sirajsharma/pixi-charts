@@ -187,6 +187,45 @@ export interface ChartOptions {
    * when it is set on them.
    */
   startAngle?: number;
+  /**
+   * Whether to render axis chrome (axis line, tick marks, tick labels, and
+   * axis title). Default: `true`. Set to `false` for sparkline embeds, hero
+   * charts, and other decorative chart instances that should render without
+   * axis lines or tick labels.
+   *
+   * Gridlines are controlled separately by {@link showGrid}: with
+   * `showAxes: false` and `showGrid: true`, only gridlines render.
+   *
+   * Ignored for chart types that have no cartesian axes (`pie`). Validation
+   * does not warn or error when it is set on pie specs.
+   */
+  showAxes?: boolean;
+  /**
+   * Whether to render gridlines through the plot area. Default: `true`.
+   * Independent of {@link showAxes} — you can show axes without gridlines
+   * for a cleaner look, or gridlines without axes for a minimalist embed.
+   *
+   * Ignored for chart types without gridlines (`heatmap` already renders
+   * none; `pie` has no gridlines at all).
+   */
+  showGrid?: boolean;
+  /**
+   * Axis titles. Optional semantic labels rendered alongside each axis to
+   * describe what the axis represents (e.g. `Revenue (USD)`, `Months`). On
+   * the x-axis the title sits below the tick labels, centered. On the
+   * y-axis it sits to the left of the tick labels, rotated -90° so the
+   * text reads bottom-to-top.
+   *
+   * Setting a title adds a fixed inset to the relevant margin so the title
+   * has space to render without clipping the plot area.
+   *
+   * Ignored for chart types without axes (`pie`). Validation does not warn
+   * or error when it is set on pie specs.
+   */
+  axisTitles?: {
+    x?: string;
+    y?: string;
+  };
 }
 
 /**

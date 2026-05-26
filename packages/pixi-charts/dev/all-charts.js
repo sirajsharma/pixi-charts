@@ -67,6 +67,20 @@ const lineSpec = {
   },
 };
 
+const lineBareSpec = {
+  type: 'line',
+  data: lineData,
+  encoding: {
+    x: { field: 'date', type: 'temporal' },
+    y: { field: 'value', type: 'quantitative' },
+  },
+  options: {
+    showAxes: false,
+    showGrid: false,
+    margin: { top: 8, right: 8, bottom: 8, left: 8 },
+  },
+};
+
 const areaSpec = {
   type: 'area',
   data: areaData,
@@ -94,6 +108,9 @@ const scatterSpec = {
     y: { field: 'y', type: 'quantitative' },
     color: { field: 'density', type: 'quantitative', scheme: 'viridis' },
     size: { field: 'radius' },
+  },
+  options: {
+    axisTitles: { x: 'X position', y: 'Y position' },
   },
 };
 
@@ -125,6 +142,7 @@ const t0 = performance.now();
 
 const specs = [
   { name: 'line', spec: lineSpec, id: 'chart-line' },
+  { name: 'line-bare', spec: lineBareSpec, id: 'chart-line-bare' },
   { name: 'area', spec: areaSpec, id: 'chart-area' },
   { name: 'bar', spec: barSpec, id: 'chart-bar' },
   { name: 'scatter', spec: scatterSpec, id: 'chart-scatter' },
@@ -148,10 +166,11 @@ for (const [i, result] of results.entries()) {
 }
 
 const failed = results.filter((r) => r.status === 'rejected').length;
+const total = specs.length;
 const status =
   failed === 0
-    ? `All 6 charts loaded in ${elapsed} ms`
-    : `${6 - failed}/6 charts loaded in ${elapsed} ms — ${failed} failed (see console)`;
+    ? `All ${total} charts loaded in ${elapsed} ms`
+    : `${total - failed}/${total} charts loaded in ${elapsed} ms — ${failed} failed (see console)`;
 loadTimeEl.textContent = `${status} · ${new Date().toLocaleTimeString()}`;
 
 window.addEventListener('beforeunload', () => {

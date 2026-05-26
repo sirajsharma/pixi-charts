@@ -680,6 +680,114 @@ describe('validateChartSpec — pie-only options ignored for non-pie charts', ()
   });
 });
 
+describe('validateChartSpec — axis-rendering options', () => {
+  it('accepts showAxes / showGrid as booleans', () => {
+    expect(() =>
+      validateChartSpec({ ...validLineSpec, options: { showAxes: false, showGrid: false } }),
+    ).not.toThrow();
+    expect(() =>
+      validateChartSpec({ ...validLineSpec, options: { showAxes: true, showGrid: true } }),
+    ).not.toThrow();
+  });
+
+  it('rejects non-boolean showAxes / showGrid', () => {
+    expect(() =>
+      validateChartSpec({
+        ...validLineSpec,
+        options: { showAxes: 'no' as unknown as boolean },
+      }),
+    ).toThrow(ChartSpecValidationError);
+    expect(() =>
+      validateChartSpec({
+        ...validLineSpec,
+        options: { showGrid: 1 as unknown as boolean },
+      }),
+    ).toThrow(ChartSpecValidationError);
+  });
+
+  it('accepts axisTitles with x and/or y string fields', () => {
+    expect(() =>
+      validateChartSpec({
+        ...validLineSpec,
+        options: { axisTitles: { x: 'Months', y: 'Revenue (USD)' } },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateChartSpec({ ...validLineSpec, options: { axisTitles: { x: 'X only' } } }),
+    ).not.toThrow();
+    expect(() =>
+      validateChartSpec({ ...validLineSpec, options: { axisTitles: {} } }),
+    ).not.toThrow();
+  });
+
+  it('accepts empty-string axis titles', () => {
+    expect(() =>
+      validateChartSpec({ ...validLineSpec, options: { axisTitles: { x: '', y: '' } } }),
+    ).not.toThrow();
+  });
+
+  it('rejects non-string axis titles', () => {
+    expect(() =>
+      validateChartSpec({
+        ...validLineSpec,
+        options: { axisTitles: { x: 42 as unknown as string } },
+      }),
+    ).toThrow(ChartSpecValidationError);
+  });
+
+  it('rejects unknown keys inside axisTitles (strict object)', () => {
+    expect(() =>
+      validateChartSpec({
+        ...validLineSpec,
+        options: { axisTitles: { x: 'X', top: 'oops' } as unknown as { x?: string } },
+      }),
+    ).toThrow(ChartSpecValidationError);
+  });
+
+  it('warns (does not throw) on a >100-char axis title', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const tooLong = 'x'.repeat(150);
+    expect(() =>
+      validateChartSpec({ ...validLineSpec, options: { axisTitles: { x: tooLong } } }),
+    ).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/axisTitles\.x.*150 chars/));
+    warnSpy.mockRestore();
+  });
+
+  it('does not warn for titles at or below 100 chars', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const exactly100 = 'a'.repeat(100);
+    expect(() =>
+      validateChartSpec({ ...validLineSpec, options: { axisTitles: { x: exactly100 } } }),
+    ).not.toThrow();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('silently ignores axis-rendering options on a pie spec', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const piesSpec = {
+      type: 'pie' as const,
+      data: [
+        { browser: 'Chrome', share: 60 },
+        { browser: 'Firefox', share: 30 },
+      ],
+      encoding: {
+        x: { field: 'browser', type: 'categorical' as const },
+        value: { field: 'share' },
+      },
+      options: {
+        showAxes: false,
+        showGrid: false,
+        axisTitles: { x: 'inert', y: 'inert' },
+      },
+    };
+    expect(() => validateChartSpec(piesSpec)).not.toThrow();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
 describe('validateChartSpec — forward compatibility', () => {
   const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 

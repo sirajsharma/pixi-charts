@@ -22,6 +22,7 @@ import {
   buildCartesianScales,
   buildCartesianSeries,
   formatCartesianTooltip,
+  resolveAxisOptions,
   resolveHeight,
   resolveMargin,
   resolveWidth,
@@ -235,7 +236,13 @@ export class AreaChart extends Chart {
       return;
     }
 
-    const setup = buildCartesianScales(this.spec, series, plotWidth, plotHeight);
+    const setup = buildCartesianScales(
+      this.spec,
+      series,
+      plotWidth,
+      plotHeight,
+      resolveAxisOptions(this.spec),
+    );
     this.series = setup.series;
     this.xAdapter = setup.xAdapter;
     this.yAdapter = setup.yAdapter;

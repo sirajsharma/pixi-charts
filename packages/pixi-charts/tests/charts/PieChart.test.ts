@@ -904,3 +904,20 @@ describe('PieChart — hover decoration', () => {
     expect(chart.destroyed).toBe(true);
   });
 });
+
+describe('PieChart — axis options are inert', () => {
+  it('renders without throwing when showAxes / showGrid / axisTitles are set', async () => {
+    const chart = new PieChart({
+      container: makeContainer(),
+      spec: makeSpec({
+        options: {
+          showAxes: false,
+          showGrid: false,
+          axisTitles: { x: 'ignored', y: 'ignored' },
+        },
+      }),
+    });
+    await expect(chart.init()).resolves.toBeUndefined();
+    chart.destroy();
+  });
+});

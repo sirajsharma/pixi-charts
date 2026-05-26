@@ -31,6 +31,12 @@ export const DOWNSAMPLE_TARGET = 2000;
 
 /** Default margins, in CSS pixels. */
 export const DEFAULT_MARGIN = { top: 24, right: 24, bottom: 40, left: 56 } as const;
+/**
+ * Extra inset added to the relevant margin (bottom for x-title, left for
+ * y-title) when an axis title is set, so the title has room to render
+ * outboard of the tick labels without clipping the plot area.
+ */
+export const AXIS_TITLE_SPACE = 24;
 /** Default canvas size when no `options.width/height` or container size is available. */
 export const DEFAULT_WIDTH = 600;
 export const DEFAULT_HEIGHT = 400;
@@ -98,6 +104,22 @@ export interface CartesianSetup {
 }
 
 /**
+ * Axis-rendering options threaded into {@link buildCartesianSetup}. Each is
+ * optional; defaults preserve pre-Session-axis-options behavior (chrome on,
+ * grid on, no titles).
+ */
+export interface CartesianAxisOptions {
+  /** Render axis line, tick marks, tick labels, and title. Default `true`. */
+  showAxes?: boolean;
+  /** Render gridlines (currently y-axis only). Default `true`. */
+  showGrid?: boolean;
+  /** x-axis title text. */
+  xTitle?: string;
+  /** y-axis title text. */
+  yTitle?: string;
+}
+
+/**
  * Build the data + scale layer for a cartesian chart: group `spec.data`
  * into series (by `encoding.color.field`, or one series if absent),
  * transform/sort/downsample points, assign categorical colors, and build
@@ -121,9 +143,10 @@ export function buildCartesianSetup(
   spec: ChartSpec,
   plotWidth: number,
   plotHeight: number,
+  axisOpts: CartesianAxisOptions = {},
 ): CartesianSetup {
   const series = buildCartesianSeries(spec);
-  return buildCartesianScales(spec, series, plotWidth, plotHeight);
+  return buildCartesianScales(spec, series, plotWidth, plotHeight, axisOpts);
 }
 
 /**
@@ -147,10 +170,11 @@ export function buildCartesianScales(
   series: CartesianSeries[],
   plotWidth: number,
   plotHeight: number,
+  axisOpts: CartesianAxisOptions = {},
 ): CartesianSetup {
   const xType = spec.encoding.x?.type ?? 'quantitative';
-  const { xAdapter, xAxis } = buildXAxis(series, xType, plotWidth);
-  const { yAdapter, yAxis } = buildYAxis(series, plotWidth, plotHeight);
+  const { xAdapter, xAxis } = buildXAxis(series, xType, plotWidth, axisOpts);
+  const { yAdapter, yAxis } = buildYAxis(series, plotWidth, plotHeight, axisOpts);
   return { series, xAdapter, yAdapter, xAxis, yAxis, plotWidth, plotHeight };
 }
 
@@ -258,7 +282,11 @@ function buildXAxis(
   series: readonly CartesianSeries[],
   xType: FieldType,
   plotWidth: number,
+  axisOpts: CartesianAxisOptions,
 ): { xAdapter: ScaleAdapter<XValue>; xAxis: Axis<XValue> } {
+  const showChrome = axisOpts.showAxes ?? true;
+  const title = axisOpts.xTitle;
+
   if (xType === 'temporal') {
     const dates = series.flatMap((s) => s.points.map((p) => p.xRaw as Date));
     const [a, b] = extent(dates) as [Date | undefined, Date | undefined];
@@ -271,6 +299,8 @@ function buildXAxis(
       orientation: 'bottom',
       length: plotWidth,
       tickFormat: (v) => timeFormat('%b %d')(v as Date),
+      showChrome,
+      ...(title !== undefined ? { title } : {}),
     });
     return { xAdapter: adapter, xAxis: axis };
   }
@@ -292,6 +322,8 @@ function buildXAxis(
       scale: adapter,
       orientation: 'bottom',
       length: plotWidth,
+      showChrome,
+      ...(title !== undefined ? { title } : {}),
     });
     return { xAdapter: adapter, xAxis: axis };
   }
@@ -307,6 +339,8 @@ function buildXAxis(
     orientation: 'bottom',
     length: plotWidth,
     tickFormat: (v) => d3format('~g')(v as number),
+    showChrome,
+    ...(title !== undefined ? { title } : {}),
   });
   return { xAdapter: adapter, xAxis: axis };
 }
@@ -321,6 +355,7 @@ function buildYAxis(
   series: readonly CartesianSeries[],
   plotWidth: number,
   plotHeight: number,
+  axisOpts: CartesianAxisOptions,
 ): { yAdapter: ScaleAdapter<number>; yAxis: Axis<number> } {
   const ys = series.flatMap((s) => s.points.map((p) => p.y));
   const minY = d3min(ys) ?? 0;
@@ -328,13 +363,18 @@ function buildYAxis(
   const domain: [number, number] = minY >= 0 ? [0, maxY] : [minY, maxY];
   const scale = scaleLinear().domain(domain).range([plotHeight, 0]).nice();
   const adapter = linearAdapter(scale);
+  const showChrome = axisOpts.showAxes ?? true;
+  const showGrid = axisOpts.showGrid ?? true;
+  const title = axisOpts.yTitle;
   const axis = new Axis<number>({
     scale: adapter,
     orientation: 'left',
     length: plotHeight,
     tickFormat: (v) => d3format('~s')(v),
-    showGrid: true,
+    showGrid,
     gridLength: plotWidth,
+    showChrome,
+    ...(title !== undefined ? { title } : {}),
   });
   return { yAdapter: adapter, yAxis: axis };
 }
@@ -479,7 +519,15 @@ export function formatCategoryValueTooltip(
   return `${labelField}: ${label} • ${valueField}: ${d3format(',.2~f')(value)}`;
 }
 
-/** Resolve the effective plot margin from the spec, falling back to defaults. */
+/**
+ * Resolve the effective plot margin from the spec, falling back to defaults.
+ *
+ * When `options.axisTitles.x` or `.y` is set, the relevant edge (bottom or
+ * left) is enlarged by {@link AXIS_TITLE_SPACE} so the title has room to
+ * render outboard of the tick labels without clipping the plot area. The
+ * bump applies on top of any user-provided override — explicitly setting
+ * `margin.left = 100` with a y-title still adds the inset.
+ */
 export function resolveMargin(spec: ChartSpec): {
   top: number;
   right: number;
@@ -487,11 +535,32 @@ export function resolveMargin(spec: ChartSpec): {
   left: number;
 } {
   const m = spec.options?.margin;
-  return {
+  const out = {
     top: m?.top ?? DEFAULT_MARGIN.top,
     right: m?.right ?? DEFAULT_MARGIN.right,
     bottom: m?.bottom ?? DEFAULT_MARGIN.bottom,
     left: m?.left ?? DEFAULT_MARGIN.left,
+  };
+  const xTitle = spec.options?.axisTitles?.x;
+  const yTitle = spec.options?.axisTitles?.y;
+  if (xTitle !== undefined && xTitle !== '') out.bottom += AXIS_TITLE_SPACE;
+  if (yTitle !== undefined && yTitle !== '') out.left += AXIS_TITLE_SPACE;
+  return out;
+}
+
+/**
+ * Read the axis-rendering options from a spec, ready to thread into
+ * {@link buildCartesianSetup} / {@link buildCartesianScales}. Centralizes the
+ * defaults so individual charts don't each re-implement the `?? true` logic.
+ */
+export function resolveAxisOptions(spec: ChartSpec): CartesianAxisOptions {
+  const xTitle = spec.options?.axisTitles?.x;
+  const yTitle = spec.options?.axisTitles?.y;
+  return {
+    showAxes: spec.options?.showAxes ?? true,
+    showGrid: spec.options?.showGrid ?? true,
+    ...(xTitle !== undefined && xTitle !== '' ? { xTitle } : {}),
+    ...(yTitle !== undefined && yTitle !== '' ? { yTitle } : {}),
   };
 }
 

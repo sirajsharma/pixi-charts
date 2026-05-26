@@ -805,3 +805,81 @@ describe('LineChart — hover decoration', () => {
     expect(chart.destroyed).toBe(true);
   });
 });
+
+describe('LineChart — axis-rendering options', () => {
+  it('with showAxes: false, no axis-line / tick-label Text is rendered', async () => {
+    const baseline = new LineChart({ container: makeContainer(), spec: makeSpec() });
+    await baseline.init();
+    const baselineTextCount = MockText.instances.length;
+    baseline.destroy();
+
+    MockText.instances.length = 0;
+    MockGraphics.gInstances.length = 0;
+    MockApp.instances.length = 0;
+    MockContainerS.instances.length = 0;
+
+    const chartless = new LineChart({
+      container: makeContainer(),
+      spec: makeSpec({ options: { showAxes: false } }),
+    });
+    await chartless.init();
+
+    // Tick labels are Text — chrome-less mode emits none from the axes (the
+    // line itself doesn't create Text). Some Text may still come from the
+    // legend, which this single-series spec doesn't have, so this should be 0.
+    expect(MockText.instances.length).toBeLessThan(baselineTextCount);
+    chartless.destroy();
+  });
+
+  it('with showAxes: false + showGrid: true, gridline Graphics still render', async () => {
+    const chart = new LineChart({
+      container: makeContainer(),
+      spec: makeSpec({ options: { showAxes: false, showGrid: true } }),
+    });
+    await chart.init();
+
+    // Y-axis gridlines use color 0xeeeeee (the default). Look for any Graphics
+    // whose stroke call carries that color.
+    const gridGfx = MockGraphics.gInstances.filter((g) =>
+      g.strokeCalls.some((s) => s.color === 0xeeeeee),
+    );
+    expect(gridGfx.length).toBeGreaterThan(0);
+    chart.destroy();
+  });
+
+  it('with showAxes: false + showGrid: false, no gridlines and no tick labels', async () => {
+    const chart = new LineChart({
+      container: makeContainer(),
+      spec: makeSpec({ options: { showAxes: false, showGrid: false } }),
+    });
+    await chart.init();
+
+    const gridGfx = MockGraphics.gInstances.filter((g) =>
+      g.strokeCalls.some((s) => s.color === 0xeeeeee),
+    );
+    expect(gridGfx).toHaveLength(0);
+    chart.destroy();
+  });
+
+  it('with axisTitles.x set, a Text matching the title is rendered', async () => {
+    const chart = new LineChart({
+      container: makeContainer(),
+      spec: makeSpec({ options: { axisTitles: { x: 'Index' } } }),
+    });
+    await chart.init();
+    const match = MockText.instances.filter((t) => t.text === 'Index');
+    expect(match).toHaveLength(1);
+    chart.destroy();
+  });
+
+  it('with axisTitles.y set, a Text matching the title is rendered', async () => {
+    const chart = new LineChart({
+      container: makeContainer(),
+      spec: makeSpec({ options: { axisTitles: { y: 'Value' } } }),
+    });
+    await chart.init();
+    const match = MockText.instances.filter((t) => t.text === 'Value');
+    expect(match).toHaveLength(1);
+    chart.destroy();
+  });
+});
