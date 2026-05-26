@@ -1,0 +1,34 @@
+---
+title: Pixi Charts
+description: A WebGL-rendered TypeScript charting library handling 100k+ points at 60fps.
+template: splash
+hero:
+  tagline: Built for performance. Designed for clarity.
+  actions:
+    - text: Get started
+      link: /getting-started/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/sirajsharma/pixi-charts
+      icon: external
+      variant: minimal
+---
+
+import { HeroChart } from '../../components/HeroChart';
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<HeroChart client:only="react" height={460} />
+
+## Why pixi-charts?
+
+<CardGrid>
+	<Card title="WebGL rendering" icon="rocket">
+		Render 100k+ data points at 60fps via PixiJS. SVG-based libraries fall over above 10k; pixi-charts is designed for the modern data scale.
+	</Card>
+	<Card title="Declarative spec" icon="document">
+		One JSON shape describes any chart. Same API for line, area, bar, scatter, heatmap, and pie. Trivially LLM-compatible.
+	</Card>
+	<Card title="Proven primitives" icon="approve-check">
+		Data math by D3 — scales, layouts, spatial indexing. Rendering by PixiJS. The best of both, none of the SVG legacy.
+	</Card>
+</CardGrid>

@@ -4,6 +4,17 @@
 
 **Status:** alpha — under active development. API is not yet stable; expect breaking changes between minor versions until 1.0.
 
+## Documentation
+
+The full docs site lives in [`docs/`](./docs) and is built with [Astro Starlight](https://starlight.astro.build/). Run it locally:
+
+```sh
+pnpm --filter pixi-charts build      # docs imports the built dist/
+pnpm --filter docs dev               # http://localhost:4321
+```
+
+Deployment is preconfigured for Vercel — see [`docs/vercel.json`](./docs/vercel.json). The `docs/` workspace builds the production site (`pnpm --filter docs build`) into `docs/dist/`.
+
 ## Why
 
 SVG-based charting libraries (Recharts, Chart.js, D3-with-SVG) hit a wall around 10k DOM nodes. `pixi-charts` renders to a single WebGL canvas via PixiJS, targeting **60fps with 100k+ data points** and graceful handling up to 1M points. The math (scales, layouts, color interpolation, spatial indexing) is delegated to D3 submodules — only the rendering layer is replaced.
@@ -70,9 +81,10 @@ The chart roster is complete; future work focuses on polish and second-order fea
 ```
 packages/
   pixi-charts/        the published library
+docs/                 Astro Starlight docs site (deployed separately)
 ```
 
-Future packages (an AI-driven chart explorer; a docs site) will live alongside.
+Future packages (an AI-driven chart explorer) will live alongside.
 
 ## Development
 

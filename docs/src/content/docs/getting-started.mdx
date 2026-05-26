@@ -1,0 +1,62 @@
+---
+title: Getting Started
+description: Install pixi-charts and render your first chart in under five minutes.
+---
+
+import { LiveChart } from '../../components/LiveChart';
+import { SpecBlock } from '../../components/SpecBlock';
+import { gettingStartedSpec } from '../../examples/getting-started-spec';
+
+Render your first chart in under five minutes.
+
+## Install
+
+```sh
+pnpm add pixi-charts pixi.js
+```
+
+`pixi.js` is a peer dependency — install it alongside the library so you control the exact PixiJS version your app uses. PixiJS v8 is ESM-only and so is pixi-charts; this works out of the box with Vite, esbuild, Rollup, webpack 5+, Next.js, Astro, and any other modern bundler.
+
+## Your first chart
+
+Every chart is described by a single `ChartSpec` value: declarative JSON that says *what* to render, not *how*. Pass it to `render()` along with the DOM element that should host the chart.
+
+```ts
+import { render } from 'pixi-charts';
+
+const spec = {
+  type: 'line',
+  data: [
+    { month: 'Jan', revenue: 12_400 },
+    { month: 'Feb', revenue: 13_900 },
+    { month: 'Mar', revenue: 15_200 },
+    // …nine more months
+  ],
+  encoding: {
+    x: { field: 'month', type: 'categorical' },
+    y: { field: 'revenue', type: 'quantitative' },
+  },
+};
+
+const container = document.getElementById('chart');
+const chart = await render(spec, container);
+
+// Later — e.g. when the component unmounts — clean up:
+chart.destroy();
+```
+
+That spec, rendered live:
+
+<LiveChart client:only="react" spec={gettingStartedSpec} height={320} ariaLabel="Monthly revenue line chart for one year" />
+
+## The spec model
+
+A `ChartSpec` has four parts. **`type`** picks one of the six chart kinds — `line`, `area`, `bar`, `scatter`, `heatmap`, or `pie`. **`data`** is an array of plain objects; one row per datum. **`encoding`** binds object fields to visual channels (`x`, `y`, `color`, `value`, `size`) and tells the library what kind of scale to build (`quantitative`, `temporal`, or `categorical`). **`options`** and **`animation`** are optional knobs for layout, legend, tooltips, and enter transitions.
+
+The same spec shape works across every chart type — switching `type: 'line'` to `type: 'bar'` re-renders the data as bars without any other code change. That's the point: charts are values, not imperative drawing routines. The library validates the spec up front with a zod schema and throws teaching-style errors when something's off, so misshaped specs fail fast with a useful message.
+
+## Next steps
+
+- **[Line Chart](/charts/line/)** — the most detailed gallery page; the template every other chart page follows.
+- **Other chart types** — Area, Bar, Scatter, Heatmap, Pie & Donut. (Stubs for now; full pages land in subsequent sessions.)
+- **Performance** — the dedicated benchmark page is coming next session.

@@ -1,0 +1,51 @@
+---
+title: Line Chart
+description: Visualize trends over an ordered, continuous variable.
+---
+
+import { LiveChart } from '../../../components/LiveChart';
+import { SpecBlock } from '../../../components/SpecBlock';
+import { lineSingleSpec } from '../../../examples/line-single';
+import { lineMultiSpec } from '../../../examples/line-multi';
+
+Line charts visualize trends over an ordered, continuous variable — time, generations, sequential measurements.
+
+## Single series
+
+<LiveChart client:only="react" spec={lineSingleSpec} height={360} ariaLabel="Daily revenue line chart for the first 200 days of 2024" />
+
+The spec:
+
+<SpecBlock client:only="react" spec={lineSingleSpec} dataPreview={3} />
+
+## What this chart does well
+
+Line charts are the right pick when the x-axis represents continuous progression and you want the reader to see *trend* — direction, slope, inflection. Time series are the canonical case: daily revenue, hourly temperature, generation-by-generation training loss. Ordered numeric sequences (algorithm iterations, model rollouts) work the same way.
+
+They're the *wrong* pick for sparse irregular data — gaps in time-ordered data become misleading straight-line connections — or for categorical comparisons, where a bar chart's discrete columns read more honestly. Very dense data (50k+ points) starts to overplot; consider a scatter with low opacity or aggregating into a heatmap.
+
+## Encoding reference
+
+| Channel | Required | Accepted types | Notes |
+| --- | --- | --- | --- |
+| `x` | yes | `quantitative`, `temporal`, `categorical` | Determines the x-axis scale and tick formatter. |
+| `y` | yes | `quantitative` | Always a numeric scale for line charts. |
+| `color` | no | `categorical` | Splits the data into multiple line series, one per distinct value. |
+
+`size` and `value` are not used by line charts.
+
+## Multi-series
+
+Add a categorical `color` encoding and the same data fans into one line per category. No grouping or pivoting needed — the library does the split.
+
+<LiveChart client:only="react" spec={lineMultiSpec} height={360} ariaLabel="Multi-region weekly revenue with three series colored by region" />
+
+The spec — note the additional `color` channel and the legend opt-in:
+
+<SpecBlock client:only="react" spec={lineMultiSpec} dataPreview={4} />
+
+## Notes
+
+- **Animation** — enter transitions are on by default. Disable with `animation: { enter: false }` if you'd rather skip the fade-in, e.g. when re-rendering inside a stream.
+- **Performance** — line charts handle tens of thousands of points smoothly; very large series may benefit from downsampling upstream. A dedicated **Performance** page (next session) will cover the trade-offs in depth.
+- **Try modifying the spec** — copy any spec above into your project, tweak `data`, `encoding`, or swap `type: 'line'` to `type: 'area'`, and re-render to see the effect. Same shape, different chart.
