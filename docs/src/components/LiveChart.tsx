@@ -6,9 +6,15 @@ interface Props {
   height?: number;
   className?: string;
   ariaLabel?: string;
+  /**
+   * Fired once the first render completes successfully. `durationMs` is wall
+   * time from the `render(spec, container)` call to the resolved chart
+   * instance — used by the perf page to surface render time.
+   */
+  onReady?: (durationMs: number) => void;
 }
 
-export function LiveChart({ spec, height = 400, className, ariaLabel }: Props) {
+export function LiveChart({ spec, height = 400, className, ariaLabel, onReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -21,6 +27,7 @@ export function LiveChart({ spec, height = 400, className, ariaLabel }: Props) {
     setLoading(true);
     setError(null);
 
+    const t0 = performance.now();
     render(spec, containerRef.current)
       .then((chart) => {
         if (cancelled) {
@@ -29,6 +36,7 @@ export function LiveChart({ spec, height = 400, className, ariaLabel }: Props) {
         }
         chartRef.current = chart;
         setLoading(false);
+        onReady?.(performance.now() - t0);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -42,7 +50,7 @@ export function LiveChart({ spec, height = 400, className, ariaLabel }: Props) {
       chartRef.current?.destroy();
       chartRef.current = null;
     };
-  }, [spec]);
+  }, [spec, onReady]);
 
   return (
     <div

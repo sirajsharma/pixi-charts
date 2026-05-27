@@ -1,8 +1,88 @@
 ---
 title: Performance
-description: How pixi-charts hits 60fps on 100k+ points, with benchmarks and trade-offs.
+description: Live performance demonstration of pixi-charts rendering large datasets at 60fps, with a side-by-side comparison against Chart.js.
 ---
 
-This page is under construction. The headline claim — 100k+ points at 60fps with sub-frame hit-testing — is verified in `packages/pixi-charts/dev/scatter-perf.js`; a dedicated performance page covering benchmarks, methodology, and trade-offs lands in the next session.
+import { PerfHero } from '../../components/perf/PerfHero';
+import { PerfComparison } from '../../components/perf/PerfComparison';
+import { SpecBlock } from '../../components/SpecBlock';
+import { makePerfScatterSpec } from '../../examples/perf-scatter';
 
-For now, see the [Line Chart page](/charts/line/) for the structure every content page follows.
+pixi-charts renders 100,000+ data points at 60 frames per second on commodity hardware. Try it — pick a point count and watch the FPS counter.
+
+<PerfHero client:only="react" />
+
+## Why this matters
+
+A user-signup dashboard at minute granularity over the last 90 days is roughly 130,000 points. A
+day of sensor telemetry sampled once per second is 86,400 points. An event log from an A/B test
+is millions of rows. Dataset sizes have grown faster than the charting libraries most teams
+reach for were designed to handle.
+
+SVG-based charting libraries create one DOM node per data point. The browser was not built to
+keep tens of thousands of `<circle>` elements layouted, painted, and hit-tested at 60fps —
+because for most of the history of charting libraries, nobody asked it to. pixi-charts targets
+the size of dataset you actually have today.
+
+The pixels are drawn with WebGL through PixiJS: 100,000 points become a single batched draw
+call. Hit-testing for hover and tooltips runs through d3-quadtree, which gives O(log n)
+nearest-neighbor queries no matter how large the cloud gets. Math stays on D3 — the library
+the rest of the data-vis ecosystem already trusts for scales, palettes, and downsampling. The
+end result is a chart that gets out of the way and lets the data scale up.
+
+## Compared to Chart.js
+
+<PerfComparison client:only="react" />
+
+Drag the slider through the range. The two render-time numbers tell most of the story: pixi-charts
+pays a fixed WebGL setup cost on the first frame, then scales sub-linearly with point count;
+Chart.js has effectively no setup cost but its per-point draw time adds up. By 100,000 points the
+gap is wide enough that you can feel it in the slider's responsiveness, not just read it in
+milliseconds.
+
+Chart.js was chosen over an SVG library on purpose: both libraries paint to a canvas / GPU
+surface, so the comparison isolates rendering architecture (batched WebGL sprites vs. per-point
+Canvas draw calls) rather than the SVG-vs-Canvas axis. It is also the most-downloaded charting
+library on npm, and the one readers most naturally want to compare against.
+
+## Architecture
+
+The library splits cleanly along a single seam: **D3 does math, PixiJS does pixels**. D3's
+submodules supply scales, color schemes, the quadtree spatial index, and (for line/area)
+LTTB downsampling. PixiJS turns the resulting numbers into GPU primitives — `ParticleContainer`
+for scatter clouds, `Graphics` for axes and lines — so each chart type renders through one or
+two batched draw calls regardless of the row count.
+
+Every chart accepts the same `ChartSpec` shape — `{ type, data, encoding, options, animation }` —
+and dispatches through a single entry point:
+
+```ts
+import { render } from 'pixi-charts';
+
+const chart = await render(spec, document.getElementById('chart'));
+// ... later
+chart.destroy();
+```
+
+The lifecycle is deliberately explicit. Constructors do nothing observable — no PIXI, no DOM,
+no async work. `init()` creates the `Application` and runs the first render; `destroy()` is the
+single drain that cancels tweens, disconnects the resize observer, destroys the PIXI app, and
+removes the canvas. There is no global state: every chart owns its own application instance,
+its own ticker subscriptions, and its own DOM listeners, which is what makes the comparison
+above safe to mount two of side by side.
+
+A few more architectural choices that earn their keep at scale: animations short-circuit on
+`prefers-reduced-motion: reduce`; the published bundle is ESM-only (PixiJS v8 is ESM-only, and
+emitting a CJS entry would ship a broken module); D3 is imported by submodule rather than the
+umbrella package so the tree-shaker can drop what the chart you actually instantiated does not
+need.
+
+## Try it
+
+Below is the exact spec that drives the hero demo at 10,000 points — same shape used at every
+scale. The API surface does not change between 1k and 500k; pass a bigger array, get a bigger
+chart.
+
+<SpecBlock spec={makePerfScatterSpec(10_000)} dataPreview={3} />
+
+<a href="/getting-started/" class="cta-link">Get started →</a>

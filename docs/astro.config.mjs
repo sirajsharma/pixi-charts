@@ -10,7 +10,7 @@ export default defineConfig({
     starlight({
       title: 'Pixi Charts',
       description: 'A WebGL-rendered TypeScript charting library handling 100k+ points at 60fps.',
-      customCss: ['./src/styles/hero.css'],
+      customCss: ['./src/styles/hero.css', './src/styles/perf.css'],
       social: [
         {
           icon: 'github',
@@ -32,7 +32,7 @@ export default defineConfig({
             { label: 'Pie & Donut', link: '/charts/pie/', badge: 'TODO' },
           ],
         },
-        { label: 'Performance', link: '/performance/', badge: 'TODO' },
+        { label: 'Performance', link: '/performance/' },
         { label: 'API Reference', link: '/api/', badge: 'TODO' },
       ],
     }),
@@ -42,7 +42,7 @@ export default defineConfig({
       noExternal: ['pixi-charts'],
     },
     optimizeDeps: {
-      include: ['react', 'react-dom', 'react-dom/client'],
+      include: ['react', 'react-dom', 'react-dom/client', 'chart.js'],
     },
   },
 });
