@@ -1,0 +1,206 @@
+/* Suppress horizontal scroll caused by the 100vw escape on platforms whose
+   100vw includes the scrollbar gutter. Scoped to the landing page via :has. */
+html:has(.hero-fullbleed),
+body:has(.hero-fullbleed) {
+  overflow-x: hidden;
+}
+
+/* Hide Starlight's splash-template auto-rendered page header (contains the
+   duplicate <h1>Pixi Charts</h1> above the hero). Scoped to landing only. */
+body:has(.hero-fullbleed) main > .content-panel:first-child {
+  display: none;
+}
+
+/* Drop the body content-panel's padding and divider so the hero sits flush
+   under the site header. */
+body:has(.hero-fullbleed) main > .content-panel {
+  padding: 0;
+  border-top: 0;
+}
+
+/* Let the markdown column expand to viewport width inside the hero region —
+   the section itself uses the 100vw escape, but the parent container's
+   1080px max-width was causing a horizontal-overflow risk on resize. */
+body:has(.hero-fullbleed) main .sl-container {
+  max-width: none;
+  margin: 0;
+  width: 100%;
+}
+
+.hero-fullbleed {
+  position: relative;
+  /* Parent (.sl-container) is forced to 100% width above, so this fills the
+     page horizontally without needing the 100vw escape — which on Windows
+     would overshoot by the vertical scrollbar's gutter. */
+  width: 100%;
+  margin-left: 0;
+  height: calc(100vh - var(--sl-nav-height, 4rem));
+  overflow: hidden;
+  background: #0a0a0a;
+}
+
+.hero-chart-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Beat LiveChart's inline borderRadius/background/height for the full-bleed
+   mount. <astro-island> wraps client:only components with display:contents,
+   so the LiveChart wrapper is not a direct child — match it via descendant. */
+.hero-chart-layer [role='img'] {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  margin: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+.hero-gradient-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.85) 0%,
+    rgba(0, 0, 0, 0.6) 30%,
+    rgba(0, 0, 0, 0) 65%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.hero-text-overlay {
+  position: absolute;
+  top: 50%;
+  left: 8%;
+  transform: translateY(-50%);
+  max-width: 540px;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.hero-text-overlay h1 {
+  font-size: clamp(2.5rem, 5vw, 4.5rem);
+  line-height: 1.05;
+  font-weight: 700;
+  margin: 0 0 1rem 0;
+  color: #fff;
+  letter-spacing: -0.02em;
+}
+
+.hero-tagline-primary {
+  font-size: clamp(1.25rem, 1.8vw, 1.5rem);
+  color: rgba(255, 255, 255, 0.95);
+  line-height: 1.4;
+  margin: 0 0 0.5rem 0;
+  max-width: 32ch;
+}
+
+.hero-tagline-secondary {
+  font-size: clamp(1rem, 1.3vw, 1.125rem);
+  color: rgba(255, 255, 255, 0.65);
+  line-height: 1.5;
+  margin: 0 0 2.5rem 0;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.hero-action-primary,
+.hero-action-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.875rem 1.75rem;
+  border-radius: 999px;
+  font-weight: 600;
+  text-decoration: none;
+  transition:
+    transform 120ms ease-out,
+    box-shadow 120ms ease-out,
+    background 120ms ease-out;
+}
+
+.hero-action-primary {
+  background: #fff;
+  color: #0a0a0a;
+}
+
+.hero-action-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(255, 255, 255, 0.15);
+}
+
+.hero-action-secondary {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+.hero-action-secondary:hover {
+  background: rgba(255, 255, 255, 0.14);
+  transform: translateY(-1px);
+}
+
+.hero-scroll-cue {
+  position: absolute;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1.5rem;
+  text-decoration: none;
+  animation: hero-bounce 2.5s ease-in-out infinite;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.4);
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+}
+
+.hero-scroll-cue:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+@keyframes hero-bounce {
+  0%,
+  100% {
+    transform: translateX(-50%) translateY(0);
+  }
+  50% {
+    transform: translateX(-50%) translateY(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-scroll-cue {
+    animation: none;
+  }
+  .hero-action-primary:hover,
+  .hero-action-secondary:hover {
+    transform: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .hero-text-overlay {
+    left: 5%;
+    right: 5%;
+    max-width: none;
+  }
+  .hero-tagline {
+    max-width: none;
+  }
+}

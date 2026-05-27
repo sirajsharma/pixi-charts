@@ -17,7 +17,7 @@ function makeSpiralData(n: number) {
   const turns = 4; // number of spiral revolutions
   const maxRadius = 42; // outer reach in plot units
   const noise = 1.8; // perpendicular jitter, tunes "fluffy" feel
-  const cx = 50;
+  const cx = 68; // shifted right of center to make room for left-aligned hero text
   const cy = 50;
 
   for (let i = 0; i < n; i += 1) {

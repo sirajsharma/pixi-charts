@@ -2,22 +2,29 @@
 title: Pixi Charts
 description: A WebGL-rendered TypeScript charting library handling 100k+ points at 60fps.
 template: splash
-hero:
-  tagline: Built for performance. Designed for clarity.
-  actions:
-    - text: Get started
-      link: /getting-started/
-      icon: right-arrow
-    - text: View on GitHub
-      link: https://github.com/sirajsharma/pixi-charts
-      icon: external
-      variant: minimal
 ---
 
 import { HeroChart } from '../../components/HeroChart';
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-<HeroChart client:only="react" height={460} />
+<section class="hero-fullbleed">
+  <div class="hero-chart-layer">
+    <HeroChart client:only="react" />
+  </div>
+  <div class="hero-gradient-overlay"></div>
+  <div class="hero-text-overlay">
+    <h1>Pixi Charts</h1>
+    <p class="hero-tagline-primary">A WebGL-rendered charting library for the modern data scale.</p>
+    <p class="hero-tagline-secondary">Built for performance. Designed for clarity.</p>
+    <div class="hero-actions">
+      <a href="/getting-started/" class="hero-action-primary">Get started →</a>
+      <a href="https://github.com/sirajsharma/pixi-charts" class="hero-action-secondary">View on GitHub ↗</a>
+    </div>
+  </div>
+  <a href="#below-hero" class="hero-scroll-cue" aria-label="Scroll to content">↓</a>
+</section>
+
+<section id="below-hero">
 
 ## Why pixi-charts?
 
@@ -32,3 +39,5 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		Data math by D3 — scales, layouts, spatial indexing. Rendering by PixiJS. The best of both, none of the SVG legacy.
 	</Card>
 </CardGrid>
+
+</section>

@@ -10,6 +10,7 @@ export default defineConfig({
     starlight({
       title: 'Pixi Charts',
       description: 'A WebGL-rendered TypeScript charting library handling 100k+ points at 60fps.',
+      customCss: ['./src/styles/hero.css'],
       social: [
         {
           icon: 'github',
