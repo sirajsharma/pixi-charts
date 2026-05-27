@@ -1,8 +1,55 @@
 ---
 title: Heatmap
-description: Encode a quantitative value across a 2D categorical grid.
+description: Show value intensity across a two-dimensional category grid.
 ---
 
-This page is under construction. The chart works — see the source on [GitHub](https://github.com/sirajsharma/pixi-charts) — but its full docs page is being written.
+import { LiveChart } from '../../../components/LiveChart';
+import { SpecBlock } from '../../../components/SpecBlock';
+import { heatmapDenseSpec } from '../../../examples/heatmap-dense';
+import { heatmapSparseSpec } from '../../../examples/heatmap-sparse';
 
-For now, see the [Line Chart page](/charts/line/) for the structure every gallery page follows.
+Heatmaps render one quantitative value per cell of a two-dimensional category grid — the right view for activity matrices, confusion matrices, hour-of-week patterns, and anywhere intensity beats precision.
+
+## Dense grid
+
+<LiveChart client:only="react" spec={heatmapDenseSpec} height={360} ariaLabel="24 by 7 grid of business activity by hour and day of week" />
+
+The spec — note that the data has one row per cell, with both axes pre-binned into categorical values:
+
+<SpecBlock client:only="react" spec={heatmapDenseSpec} dataPreview={4} />
+
+## What this chart does well
+
+Heatmaps are the right pick when you have a value defined on a 2-D category grid and you want the reader to see *where* the intensity lives. Activity by hour-of-day-and-day-of-week, model confusion across class pairs, sales by store-and-month — each becomes a glanceable rectangle. The reader does not read individual numbers; they read the gradient.
+
+They're the wrong pick when only a handful of cells have meaningful values (a sorted bar chart reads better), when both axes are continuous (a 2-D density estimate or hexbin is more honest), or when the value range spans many orders of magnitude (the linear colour ramp collapses the small values; log-transform upstream first).
+
+## Encoding reference
+
+| Channel | Required | Accepted types | Notes |
+| --- | --- | --- | --- |
+| `x` | yes | `categorical` | Becomes the columns of the grid. Pre-bin continuous values upstream. |
+| `y` | yes | `categorical` | Becomes the rows. Index 0 is at the *top* (calendar / confusion-matrix convention). |
+| `value` | yes | quantitative field | The cell intensity. |
+| `color` | no | `quantitative` only | Defaults to viridis. The color scheme can be overridden via `color.scheme`. |
+
+`size` is not used by heatmaps.
+
+## Sparse cells
+
+Heatmap accepts a partial grid — feed it an array missing some (x, y) pairs and those cells render transparent. Tooltips return `null` over empty cells, so the hover layer stays quiet.
+
+<LiveChart client:only="react" spec={heatmapSparseSpec} height={360} ariaLabel="The same 24 by 7 grid with roughly 15 percent of cells omitted, rendering as transparent gaps" />
+
+The spec — same encoding, fewer rows:
+
+<SpecBlock client:only="react" spec={heatmapSparseSpec} dataPreview={4} />
+
+Reach for sparse heatmaps when missing data is itself the story: incomplete coverage, unsampled regions, or matrices with structural zeros that should not be coloured at all.
+
+## Notes
+
+- **Pre-bin your data** — heatmap does not auto-bin. Bucket continuous values into category labels upstream (`'00'…'23'`, `'Mon'…'Sun'`, score-band strings). Automatic binning of continuous axes is on the roadmap.
+- **Row order** — y rows render top-to-bottom in the order they first appear in the data. Sort your data if you want a specific row ordering.
+- **Rendering** — pixi-charts builds the grid as a texture-from-buffer with `scaleMode: 'nearest'`, so cell edges stay crisp at every zoom.
+- **No enter animation** — heatmaps render in a single pass without the fade-in used by other chart types. A grid-wide reveal animation didn't read well in practice.

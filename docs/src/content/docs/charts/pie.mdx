@@ -1,8 +1,55 @@
 ---
 title: Pie & Donut
-description: Part-to-whole composition across a small number of categories.
+description: Express a few parts of a whole as angular slices.
 ---
 
-This page is under construction. The chart works — see the source on [GitHub](https://github.com/sirajsharma/pixi-charts) — but its full docs page is being written.
+import { LiveChart } from '../../../components/LiveChart';
+import { SpecBlock } from '../../../components/SpecBlock';
+import { pieSpec } from '../../../examples/pie';
+import { donutSpec } from '../../../examples/donut';
 
-For now, see the [Line Chart page](/charts/line/) for the structure every gallery page follows.
+Pie and donut charts express part-to-whole composition across a small number of categories — each slice's angular extent encodes the share.
+
+## Pie
+
+<LiveChart client:only="react" spec={pieSpec} height={360} ariaLabel="Browser market share as a pie chart with six slices" />
+
+The spec:
+
+<SpecBlock client:only="react" spec={pieSpec} dataPreview={6} />
+
+## What this chart does well
+
+Pies are the right pick when the story is "how is this whole divided" *and* there are few enough slices that the reader can read each one without squinting — five or six is roughly the limit. Reach for it when the composition itself matters more than the ordering or the precise values of the parts.
+
+Pies are the wrong pick when there are many slices (small wedges become unreadable; use a sorted bar chart), when small differences between slices matter (length comparisons read more accurately than angle comparisons), or when the data is not a true part-to-whole (use a bar chart for ranked magnitudes).
+
+## Encoding reference
+
+| Channel | Required | Accepted types | Notes |
+| --- | --- | --- | --- |
+| `x` | yes | `categorical` | The slice label. Name kept as `x` for spec consistency; pies have no axis. |
+| `value` | yes | quantitative field | The slice magnitude. Values do not need to sum to 100; the chart normalises. |
+| `color` | no | `categorical` | Overrides the default palette mapping. |
+
+`y` and `size` are not used by pie charts.
+
+## Donut
+
+Set `options.innerRadius` to a positive number and the same chart renders as a donut. The inner hole is typically used to host a central value — a total, an average, a headline metric — positioned absolutely above the chart container in the host layout.
+
+<LiveChart client:only="react" spec={donutSpec} height={360} ariaLabel="The same browser market share, rendered as a donut" />
+
+The spec:
+
+<SpecBlock client:only="react" spec={donutSpec} dataPreview={6} />
+
+Reach for the donut variant when you have a single number that summarises the whole — total revenue, total users, average score — and you want it visible without a separate header.
+
+## Notes
+
+- **Slice order** — slices render in input-data order, not sorted by value. Sort upstream if you want largest-first; leaving the order to the caller keeps semantic groupings (e.g. "always show Chrome first") under the consumer's control.
+- **Start angle** — sweep starts at the 12 o'clock position (`startAngle: -π/2`) and runs clockwise. Override `options.startAngle` (radians) if you need a different rotation.
+- **Inner radius** — clamped to `[0, outerRadius - 1]`; values larger than the available radius are silently capped.
+- **Scope cuts** — no slice labels, exploded slices, or leader lines in v0.1. If you need labelled slices, render them in the host layout from the same data.
+- **When in doubt, use bars** — for more than ~6 slices, or when precise comparison matters, a sorted bar chart almost always communicates better. Pie's strength is the immediate "this dominates" read, not magnitude precision.

@@ -1,8 +1,52 @@
 ---
 title: Area Chart
-description: Filled line chart for cumulative or stacked quantitative data.
+description: Emphasize trend magnitude over a continuous variable.
 ---
 
-This page is under construction. The chart works — see the source on [GitHub](https://github.com/sirajsharma/pixi-charts) — but its full docs page is being written.
+import { LiveChart } from '../../../components/LiveChart';
+import { SpecBlock } from '../../../components/SpecBlock';
+import { areaSingleSpec } from '../../../examples/area-single';
+import { areaMultiSpec } from '../../../examples/area-multi';
 
-For now, see the [Line Chart page](/charts/line/) for the structure every gallery page follows.
+Area charts trade exact-value precision for trend mass — the filled region weights the eye toward magnitude rather than the precise y value at any given x.
+
+## Single series
+
+<LiveChart client:only="react" spec={areaSingleSpec} height={360} ariaLabel="Daily mean temperature in degrees Celsius over 120 days" />
+
+The spec:
+
+<SpecBlock client:only="react" spec={areaSingleSpec} dataPreview={3} />
+
+## What this chart does well
+
+Area charts are the right pick when the story is "more vs. less over time" and the reader cares about overall shape, not point reads. The filled region carries visual weight that a thin line cannot — useful for revenue swells, traffic surges, temperature swings, anywhere the *quantity* matters as much as the trend.
+
+They're the *wrong* pick when readers need to read exact y values (line is more honest), when categories are unordered (bar), or when comparing several overlapping series precisely. The 40% alpha overlap reads as composition, not exact comparison.
+
+## Encoding reference
+
+| Channel | Required | Accepted types | Notes |
+| --- | --- | --- | --- |
+| `x` | yes | `quantitative`, `temporal`, `categorical` | Determines the x-axis scale and tick formatter. |
+| `y` | yes | `quantitative` | Always a numeric scale. The baseline sits at `scale(0)`, not the plot floor, so domains crossing zero render correctly. |
+| `color` | no | `categorical` | Splits data into series; one filled region per distinct value, overlaid at 40% alpha. |
+
+`size` and `value` are not used by area charts.
+
+## Multi-series
+
+Add a categorical `color` encoding and the data fans into one filled region per category. Regions overlap at 40% alpha — stacking is not supported in v0.1.
+
+<LiveChart client:only="react" spec={areaMultiSpec} height={360} ariaLabel="Daily temperature for Lisbon, Reykjavik, and Marrakech over 90 days, overlaid" />
+
+The spec:
+
+<SpecBlock client:only="react" spec={areaMultiSpec} dataPreview={4} />
+
+## Notes
+
+- **Stacking** — multi-series areas overlap rather than stack in v0.1. A stacked variant is on the roadmap.
+- **Top edge** — the upper bound of each filled region is also stroked, giving the area a clear line above the fill.
+- **Performance** — LTTB downsampling kicks in above 5,000 points per series; visual fidelity is preserved and tooltip resolution is unaffected.
+- **Animation** — enter transitions are on by default; disable with `animation: { enter: false }` when re-rendering inside a stream.

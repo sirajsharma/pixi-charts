@@ -1,8 +1,57 @@
 ---
 title: Scatter Chart
-description: Plot two quantitative dimensions as points; the perf-flex chart.
+description: Plot two quantitative dimensions across thousands of points.
 ---
 
-This page is under construction. The chart works — and is the one driving the landing-page hero at 10,000 points. See the source on [GitHub](https://github.com/sirajsharma/pixi-charts).
+import { LiveChart } from '../../../components/LiveChart';
+import { SpecBlock } from '../../../components/SpecBlock';
+import { scatterCategoricalSpec } from '../../../examples/scatter-categorical';
+import { scatterContinuousSpec } from '../../../examples/scatter-continuous';
 
-For now, see the [Line Chart page](/charts/line/) for the structure every gallery page follows.
+Scatter charts plot two quantitative variables as points — the most direct view of joint distribution, and pixi-charts' performance flagship: 100k+ points at 60fps via PixiJS `ParticleContainer`.
+
+## Categorical color
+
+<LiveChart client:only="react" spec={scatterCategoricalSpec} height={360} ariaLabel="Iris petal length vs. petal width, colored by species" />
+
+The spec:
+
+<SpecBlock client:only="react" spec={scatterCategoricalSpec} dataPreview={4} />
+
+## What this chart does well
+
+Scatter is the chart for *joint distribution*: the shape of the cloud reveals correlation, clustering, outliers, and gaps that aggregated views collapse. Reach for it when you have two quantitative variables per observation and you want the reader to see how they move together — or fail to.
+
+It's the wrong pick when the data is one-dimensional (use a histogram or strip plot), when the variables aren't both quantitative (categorical-vs-categorical wants a heatmap), or when the point cloud is so dense that overplotting obscures everything. At extreme densities, 2-D binning into a heatmap usually communicates the story better than another million points.
+
+See the [Performance page](/performance/) for a live demo of the 100k-point regime; this page focuses on the encoding shapes.
+
+## Encoding reference
+
+| Channel | Required | Accepted types | Notes |
+| --- | --- | --- | --- |
+| `x` | yes | `quantitative`, `temporal` | The horizontal coordinate. |
+| `y` | yes | `quantitative`, `temporal` | The vertical coordinate. |
+| `color` | no | `categorical` or `quantitative` | Categorical → discrete palette + categorical legend. Quantitative → viridis ramp + continuous legend. |
+| `size` | no | numeric field | Square-root scale so visual *area* is proportional to value, not radius. |
+
+`value` is not used by scatter charts.
+
+## Continuous color and size
+
+When `color.type` is `quantitative`, pixi-charts uses a sequential viridis ramp. Pair it with a `size` channel and each point carries three quantitative variables at once: position-x, position-y, color, and area.
+
+<LiveChart client:only="react" spec={scatterContinuousSpec} height={360} ariaLabel="Solar panel array daily output: hours of sunlight versus kilowatt-hours, colored by ambient temperature and sized by panel count" />
+
+The spec:
+
+<SpecBlock client:only="react" spec={scatterContinuousSpec} dataPreview={4} />
+
+Reach for continuous color when the third variable is itself quantitative (elevation, density, time-of-day, temperature). Reach for size when you want to weight the eye toward higher-magnitude observations — votes, market cap, sample count.
+
+## Notes
+
+- **Performance** — points render through a `ParticleContainer` in a single batched draw call. 100k+ points sustain 60fps on commodity hardware; see [/performance/](/performance/) for the demonstration.
+- **Hit-testing** — uses a d3-quadtree spatial index, so tooltips stay O(log n) per pointer move even at high point counts.
+- **Hover overlay** — the hover marker is a separate sprite drawn above the particle texture, so hover doesn't trigger a particle-buffer re-upload.
+- **Size scale** — radius scales with the square root of the size field; visual *area* tracks the data linearly. This is the convention readers expect; linear-radius scales misrepresent magnitude.

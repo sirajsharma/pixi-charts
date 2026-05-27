@@ -1,8 +1,52 @@
 ---
 title: Bar Chart
-description: Compare quantitative values across categorical or ordinal groupings.
+description: Compare discrete categories at a glance.
 ---
 
-This page is under construction. The chart works — see the source on [GitHub](https://github.com/sirajsharma/pixi-charts) — but its full docs page is being written.
+import { LiveChart } from '../../../components/LiveChart';
+import { SpecBlock } from '../../../components/SpecBlock';
+import { barVerticalSpec } from '../../../examples/bar-vertical';
+import { barHorizontalSpec } from '../../../examples/bar-horizontal';
 
-For now, see the [Line Chart page](/charts/line/) for the structure every gallery page follows.
+Bar charts are the workhorse for discrete categorical comparison — one quantitative value per category, read by length.
+
+## Vertical bars
+
+<LiveChart client:only="react" spec={barVerticalSpec} height={360} ariaLabel="Monthly active users by month across the fiscal year" />
+
+The spec:
+
+<SpecBlock client:only="react" spec={barVerticalSpec} dataPreview={4} />
+
+## What this chart does well
+
+Bars are the most honest choice when the x-axis is genuinely categorical: months, products, regions, event types. The reader's eye compares lengths from a shared baseline, which is the comparison the visual system is best at. Length-from-zero is roughly the only chart primitive humans read accurately without practice.
+
+They're the wrong pick when the x-axis is continuous (line or area carries the trend better), when there are too many categories to read individually (consider a strip plot or a sorted lollipop), or when the story is part-to-whole composition (pie at small slice counts, otherwise stacked bar — planned for a later release).
+
+## Encoding reference
+
+| Channel | Required | Accepted types | Notes |
+| --- | --- | --- | --- |
+| `x` | yes | one of x/y must be `categorical`, the other `quantitative` | The categorical channel becomes the band axis; the quantitative channel becomes the value axis. |
+| `y` | yes | same as above | Swaps role with `x` under `orientation: 'horizontal'`. |
+| `color` | no | `categorical` | Sets **per-bar** colour, not series split. The palette wraps above ~20 distinct values; pixi-charts logs a console warning when that happens. |
+
+`size` and `value` are not used by bar charts.
+
+## Horizontal bars
+
+Use `options.orientation: 'horizontal'` when category labels are long enough to clip under vertical bars — product names, full sentences, multi-word region names. The band axis moves to the y-axis and each label sits on its own row.
+
+<LiveChart client:only="react" spec={barHorizontalSpec} height={360} ariaLabel="Top eight SaaS products by quarterly revenue, horizontal bars" />
+
+The spec:
+
+<SpecBlock client:only="react" spec={barHorizontalSpec} dataPreview={3} />
+
+## Notes
+
+- **Single series** — v0.1 ships one bar per category. Grouped and stacked bars are planned.
+- **Negative values** — the baseline sits at `valueAdapter.scale(0)`, not the plot floor, so bars with negative values grow opposite the positive direction from a shared zero.
+- **Bar order** — bars render in input-data order. Sort upstream if you want ranked output.
+- **Color = per-bar** — unlike line and area, the `color` encoding in a bar chart paints each individual bar, not a series. Useful for highlighting a subset (e.g. a single quarter, or one tier of a categorical breakdown).
