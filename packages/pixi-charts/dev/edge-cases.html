@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>pixi-charts — edge cases</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        background: #17181c;
+        color: #cccccc;
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 14px;
+        margin: 28px 0 8px;
+        color: #e0e0e0;
+      }
+      p {
+        font-size: 12px;
+        margin: 0 0 12px;
+        color: #888;
+        max-width: 640px;
+      }
+      .case {
+        margin-bottom: 36px;
+      }
+      .chart-wrap {
+        border: 1px dashed #333;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>pixi-charts — rendering edge cases</h1>
+    <p>
+      Three adversarial cases that the original happy-path harness missed: dark theme on a dark
+      background, long category labels on a horizontal bar chart, and corner-hover tooltip
+      positioning on a small chart.
+    </p>
+
+    <div class="case">
+      <h2>1. Dark theme</h2>
+      <p>
+        Axis ticks, gridlines, axis line, and legend text should all be readable on the dark page
+        background.
+      </p>
+      <div id="dark-line" class="chart-wrap" style="width: 720px; height: 360px"></div>
+    </div>
+
+    <div class="case">
+      <h2>2. Long band-axis labels (horizontal bar)</h2>
+      <p>
+        Left margin must size to fit the widest category label, capped at 35% of chart width.
+        Labels that exceed the cap should be ellipsis-truncated.
+      </p>
+      <div id="long-labels" class="chart-wrap" style="width: 720px; height: 420px"></div>
+    </div>
+
+    <div class="case">
+      <h2>3. Tooltip near container edges</h2>
+      <p>
+        Hover near each of the four corners of this small chart. The tooltip should flip / clamp
+        to stay fully inside the dashed boundary — never escape.
+      </p>
+      <div id="corner-tooltip" class="chart-wrap" style="width: 320px; height: 240px"></div>
+    </div>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "pixi.js":            "/node_modules/pixi.js/dist/pixi.mjs",
+          "d3-array":           "https://esm.sh/d3-array@3.2.4?bundle",
+          "d3-color":           "https://esm.sh/d3-color@3.1.0?bundle",
+          "d3-format":          "https://esm.sh/d3-format@3.1.0?bundle",
+          "d3-quadtree":        "https://esm.sh/d3-quadtree@3.0.1?bundle",
+          "d3-scale":           "https://esm.sh/d3-scale@4.0.2?bundle",
+          "d3-scale-chromatic": "https://esm.sh/d3-scale-chromatic@3.1.0?bundle",
+          "d3-shape":           "https://esm.sh/d3-shape@3.2.0?bundle",
+          "d3-time-format":     "https://esm.sh/d3-time-format@4.1.0?bundle",
+          "zod":                "https://esm.sh/zod@3.23.8?bundle"
+        }
+      }
+    </script>
+    <script type="module" src="edge-cases.js"></script>
+  </body>
+</html>

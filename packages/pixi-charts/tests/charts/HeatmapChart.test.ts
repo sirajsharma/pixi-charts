@@ -126,7 +126,10 @@ vi.mock('pixi.js', () => {
     position = { set: vi.fn() };
     width = 30;
     height = 12;
-    destroy = vi.fn();
+    destroyed = false;
+    destroy = vi.fn((): void => {
+      this.destroyed = true;
+    });
     constructor(opts: { text: string }) {
       this.text = opts.text;
       MockText.instances.push(this);
@@ -207,7 +210,7 @@ vi.mock('pixi.js', () => {
   };
 });
 
-import { Application, BufferImageSource, Graphics, Sprite, Texture } from 'pixi.js';
+import { Application, BufferImageSource, Graphics, Sprite, Text, Texture } from 'pixi.js';
 
 import {
   buildHeatmapHitTester,
@@ -646,5 +649,44 @@ describe('HeatmapChart — hover decoration', () => {
       chart.destroy();
     }).not.toThrow();
     expect(chart.destroyed).toBe(true);
+  });
+});
+
+describe('HeatmapChart — long band-axis labels', () => {
+  it('truncates long y-category labels when the left margin cap is exceeded', async () => {
+    // Force the left (y-band) measurement past the cap: tiny canvas width
+    // → cap = canvasW * 0.35 = 42; mock label width is fixed 30; inset = 14
+    // → desired = 44 > cap, truncation kicks in.
+    const container = makeContainer(120, 300);
+    const longY = ['North America Customer Success Org', 'Europe Sales & Marketing'];
+    const chart = new HeatmapChart({
+      container,
+      spec: {
+        type: 'heatmap',
+        data: longY.flatMap((y) => [
+          { x: 'A', y, count: 5 },
+          { x: 'B', y, count: 10 },
+        ]),
+        encoding: {
+          x: { field: 'x', type: 'categorical' },
+          y: { field: 'y', type: 'categorical' },
+          color: { field: 'count', type: 'quantitative' },
+          value: { field: 'count' },
+        },
+        animation: { enter: false },
+      },
+    });
+    await chart.init();
+
+    const MockTxt = Text as unknown as {
+      instances: { text: string; destroyed: boolean }[];
+    };
+    const rendered = MockTxt.instances.filter((t) => !t.destroyed).map((t) => t.text);
+    for (const original of longY) {
+      expect(rendered).not.toContain(original);
+    }
+    expect(rendered.some((t) => t.endsWith('…'))).toBe(true);
+
+    chart.destroy();
   });
 });

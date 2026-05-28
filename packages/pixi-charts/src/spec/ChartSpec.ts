@@ -1,4 +1,5 @@
 import type { EasingName } from '../core/animation.js';
+import type { Theme, ThemeColors } from '../core/theme.js';
 
 /**
  * How a data field should be interpreted by the chart.
@@ -226,6 +227,29 @@ export interface ChartOptions {
     x?: string;
     y?: string;
   };
+  /**
+   * Named chrome theme. Sets sensible default colors for axes, tick labels,
+   * gridlines, and legend text in one move. Default `'light'` — preserves
+   * pre-theme rendering byte-for-byte.
+   *
+   * Affects chart **chrome only**; data-series colors still come from
+   * {@link ColorEncoding.scheme} regardless of theme. Per-color overrides
+   * via {@link ChartOptions.colors} win over the preset for any field they
+   * specify.
+   *
+   * No auto-detection from CSS / DOM: pass `'dark'` explicitly when
+   * rendering on a dark background.
+   */
+  theme?: Theme;
+  /**
+   * Per-color chrome overrides. Each field is independently optional;
+   * specified entries win over the {@link ChartOptions.theme} preset, while
+   * omitted entries fall through to the preset.
+   *
+   * Use to fine-tune a single chrome color (e.g. `colors: { grid: 0x404040 }`
+   * with `theme: 'dark'`) rather than redefining the whole preset.
+   */
+  colors?: ThemeColors;
 }
 
 /**

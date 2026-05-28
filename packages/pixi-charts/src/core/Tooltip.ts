@@ -98,10 +98,23 @@ export class Tooltip {
    * Render the tooltip at `(x, y)` (container-relative) with the given
    * content, then make it visible.
    *
-   * Performs edge avoidance against the container's bounding rect: if the
-   * tooltip would overflow the right or bottom edge, it flips to the left of
-   * or above the cursor respectively. This avoids the cursor obscuring the
-   * tooltip near the canvas corners.
+   * Performs edge avoidance against the container's bounding rect:
+   *
+   * 1. **Flip.** Default placement is below-and-right of the cursor. If
+   *    that would overflow the right edge, the tooltip flips to the left
+   *    of the cursor; if it would overflow the bottom, it flips above.
+   * 2. **Clamp.** After flipping, the result is clamped to the container
+   *    bounds so it remains fully visible even when:
+   *    - the flipped position itself overflows (cursor near the left/top
+   *      edge plus a tooltip wider than the available space on the cursor's
+   *      preferred side), or
+   *    - the tooltip is larger than the container in some dimension
+   *      (clamps to `0` rather than escaping past the near edge).
+   *
+   * Cursor-follow callers (every chart's hover handler) re-invoke `show()`
+   * on every pointermove with the same content when the datum hasn't
+   * changed; that's intentional — collision must run each move, only the
+   * tooltip's content is deduped at the call site via `event.isNewDatum`.
    *
    * @throws If called after {@link destroy}. Silent no-ops mask bugs.
    */
@@ -134,12 +147,29 @@ export class Tooltip {
     let left = opts.x + CURSOR_OFFSET_PX;
     let top = opts.y + CURSOR_OFFSET_PX;
 
+    // Flip horizontally if the preferred (right-of-cursor) placement would
+    // overflow the right edge. Same vertically for the bottom edge.
     if (left + tooltipW > containerRect.width) {
       left = opts.x - tooltipW - CURSOR_OFFSET_PX;
     }
     if (top + tooltipH > containerRect.height) {
       top = opts.y - tooltipH - CURSOR_OFFSET_PX;
     }
+
+    // Clamp into the container. Handles:
+    // (1) Initial top/left overflow — `opts.x`/`opts.y` near 0 with no flip
+    //     ever triggered (cursor in the top-left corner).
+    // (2) Flipped position still overflows the opposite edge — cursor near
+    //     left/top with a tooltip wider/taller than the cursor's offset.
+    // (3) Tooltip larger than container — `containerRect - tooltip` goes
+    //     negative; `Math.max(0, …)` pins the upper bound to `0` so the
+    //     tooltip aligns to the near edge rather than escaping past it.
+    const maxLeft = Math.max(0, containerRect.width - tooltipW);
+    const maxTop = Math.max(0, containerRect.height - tooltipH);
+    if (left < 0) left = 0;
+    else if (left > maxLeft) left = maxLeft;
+    if (top < 0) top = 0;
+    else if (top > maxTop) top = maxTop;
 
     el.style.left = `${String(left)}px`;
     el.style.top = `${String(top)}px`;

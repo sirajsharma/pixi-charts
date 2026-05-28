@@ -17,6 +17,8 @@ import { bandAdapter, type ScaleAdapter } from '../core/ScaleAdapter.js';
 import { Tooltip } from '../core/Tooltip.js';
 import { tween } from '../core/animation.js';
 import { computeLayout } from '../core/layout.js';
+import { measureBandAxisMargin } from '../core/text.js';
+import { resolveTheme } from '../core/theme.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 
 import { resolveHeight, resolveMargin, resolveWidth, toNumber } from './_shared/cartesian.js';
@@ -394,12 +396,29 @@ export class HeatmapChart extends Chart {
     const span = maxValue - minValue;
     const normalize = (n: number): number => (span === 0 ? 0.5 : (n - minValue) / span);
 
+    const themeColors = resolveTheme(this.spec.options?.theme, this.spec.options?.colors);
+
     // Build the continuous legend (one per chart) before layout so its width
     // can reduce the plot. Skipped when the consumer opts out.
     const showLegend = this.spec.options?.showLegend !== false;
     const legend = showLegend
-      ? new Legend({ type: 'continuous', scheme: colorScheme, domain: [minValue, maxValue] })
+      ? new Legend({
+          type: 'continuous',
+          scheme: colorScheme,
+          domain: [minValue, maxValue],
+          labelColor: themeColors.legendText,
+        })
       : null;
+
+    // Pre-measure both band axes' labels so the left margin fits the widest
+    // y-category and the bottom margin fits the (rotated-or-not) x-category
+    // labels. Heatmaps are the only chart with band on BOTH axes — both can
+    // hit the long-label clipping bug.
+    const labelStyle = { fontFamily: 'sans-serif', fontSize: 11 };
+    const yBandMargin = measureBandAxisMargin(yCategories, labelStyle, canvasW, 'cross-horizontal');
+    const xBandMargin = measureBandAxisMargin(xCategories, labelStyle, canvasH, 'cross-vertical');
+    margin.left = Math.max(margin.left, yBandMargin.margin);
+    margin.bottom = Math.max(margin.bottom, xBandMargin.margin);
 
     const layout = computeLayout({
       totalWidth: canvasW,
@@ -455,11 +474,20 @@ export class HeatmapChart extends Chart {
     const showChrome = this.spec.options?.showAxes ?? true;
     const xTitle = this.spec.options?.axisTitles?.x;
     const yTitle = this.spec.options?.axisTitles?.y;
+    const chromeColors = {
+      labelColor: themeColors.label,
+      lineColor: themeColors.axis,
+      gridColor: themeColors.grid,
+    };
+    const yTruncated = yBandMargin.truncated;
+    const xTruncated = xBandMargin.truncated;
     const xAxis = new Axis<string>({
       scale: xAdapter,
       orientation: 'bottom',
       length: plotWidth,
       showChrome,
+      ...chromeColors,
+      ...(xTruncated !== null ? { tickFormat: (v: string): string => xTruncated.get(v) ?? v } : {}),
       ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
     });
     const yAxis = new Axis<string>({
@@ -467,6 +495,8 @@ export class HeatmapChart extends Chart {
       orientation: 'left',
       length: plotHeight,
       showChrome,
+      ...chromeColors,
+      ...(yTruncated !== null ? { tickFormat: (v: string): string => yTruncated.get(v) ?? v } : {}),
       ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
     });
     this.xAxis = xAxis;

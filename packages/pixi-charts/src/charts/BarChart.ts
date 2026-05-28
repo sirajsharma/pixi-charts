@@ -17,12 +17,15 @@ import { bandAdapter, linearAdapter, type ScaleAdapter } from '../core/ScaleAdap
 import { Tooltip } from '../core/Tooltip.js';
 import { tween } from '../core/animation.js';
 import { computeLayout } from '../core/layout.js';
+import { measureBandAxisMargin } from '../core/text.js';
+import type { ResolvedThemeColors } from '../core/theme.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 
 import {
   COLOR_GROUP_WARN_THRESHOLD,
   DEFAULT_COLOR_SCHEME,
   formatCategoryValueTooltip,
+  resolveChartTheme,
   resolveHeight,
   resolveMargin,
   resolveWidth,
@@ -317,6 +320,8 @@ export class BarChart extends Chart {
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
 
+    const themeColors = resolveChartTheme(this.spec);
+
     // Legend items are derived from the color encoding alone — independent of
     // plot pixel dimensions — so we can size the legend before computing the
     // final plot rect (which the legend's width feeds into).
@@ -324,8 +329,30 @@ export class BarChart extends Chart {
     const showLegend = this.spec.options?.showLegend !== false;
     const legend =
       showLegend && legendItems !== null && legendItems.length > 0
-        ? new Legend({ type: 'categorical', orientation: 'vertical', items: legendItems })
+        ? new Legend({
+            type: 'categorical',
+            orientation: 'vertical',
+            items: legendItems,
+            labelColor: themeColors.legendText,
+          })
         : null;
+
+    // Pre-measure the band-axis labels so the relevant margin grows to fit
+    // long category names (capped at MAX_BAND_MARGIN_FRACTION of the canvas
+    // dimension). For horizontal bars this is the left margin (label width);
+    // for vertical bars the bottom margin (label height — usually a no-op
+    // at default font size but defended against larger fonts).
+    const categories = this.extractCategories();
+    const labelStyle = { fontFamily: 'sans-serif', fontSize: 11 };
+    const bandMargin =
+      this.orientation === 'horizontal'
+        ? measureBandAxisMargin(categories, labelStyle, canvasW, 'cross-horizontal')
+        : measureBandAxisMargin(categories, labelStyle, canvasH, 'cross-vertical');
+    if (this.orientation === 'horizontal') {
+      margin.left = Math.max(margin.left, bandMargin.margin);
+    } else {
+      margin.bottom = Math.max(margin.bottom, bandMargin.margin);
+    }
 
     const layout = computeLayout({
       totalWidth: canvasW,
@@ -343,7 +370,7 @@ export class BarChart extends Chart {
       return;
     }
 
-    const setup = this.buildSetup(plotWidth, plotHeight);
+    const setup = this.buildSetup(plotWidth, plotHeight, themeColors, bandMargin.truncated);
     this.records = setup.records;
     this.bandAdapter = setup.bandAdapter;
     this.valueAdapter = setup.valueAdapter;
@@ -405,6 +432,33 @@ export class BarChart extends Chart {
   }
 
   /**
+   * Distinct category labels from `spec.data`, in first-seen order, filtered
+   * the same way {@link buildSetup} filters records (skip rows with no
+   * parseable value). Used by `render()` for pre-layout band-axis margin
+   * measurement before the records-and-axes pass runs.
+   *
+   * @internal
+   */
+  private extractCategories(): string[] {
+    const enc = this.spec.encoding;
+    const categoryField =
+      this.orientation === 'horizontal' ? (enc.y?.field ?? '') : (enc.x?.field ?? '');
+    const valueField =
+      this.orientation === 'horizontal' ? (enc.x?.field ?? '') : (enc.y?.field ?? '');
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const row of this.spec.data) {
+      if (toNumber(row[valueField]) === null) continue;
+      const cat = String(row[categoryField]);
+      if (!seen.has(cat)) {
+        seen.add(cat);
+        out.push(cat);
+      }
+    }
+    return out;
+  }
+
+  /**
    * Transform `spec.data` into {@link BarRecord}s and build the band/value
    * scales, adapters, and the two {@link Axis} instances. Records preserve
    * input order — the consumer controls bar order via their data array; we
@@ -412,7 +466,12 @@ export class BarChart extends Chart {
    *
    * @internal
    */
-  private buildSetup(plotWidth: number, plotHeight: number): BarSetup {
+  private buildSetup(
+    plotWidth: number,
+    plotHeight: number,
+    themeColors: ResolvedThemeColors,
+    truncatedCategoryLabels: Map<string, string> | null,
+  ): BarSetup {
     const enc = this.spec.encoding;
     const categoryField =
       this.orientation === 'horizontal' ? (enc.y?.field ?? '') : (enc.x?.field ?? '');
@@ -484,6 +543,20 @@ export class BarChart extends Chart {
     const xTitle = this.spec.options?.axisTitles?.x;
     const yTitle = this.spec.options?.axisTitles?.y;
 
+    // Pre-truncated band-axis tick formatter. When measurement decided some
+    // category labels exceed the margin cap, render their ellipsized form
+    // instead of the original so the on-screen text matches reserved space.
+    const bandTickFormat =
+      truncatedCategoryLabels === null
+        ? undefined
+        : (v: string): string => truncatedCategoryLabels.get(v) ?? v;
+
+    const chromeColors = {
+      labelColor: themeColors.label,
+      lineColor: themeColors.axis,
+      gridColor: themeColors.grid,
+    };
+
     if (this.orientation === 'horizontal') {
       bandScale.range([0, plotHeight]);
       valueScale.range([0, plotWidth]);
@@ -498,6 +571,7 @@ export class BarChart extends Chart {
         showGrid,
         gridLength: plotHeight,
         showChrome,
+        ...chromeColors,
         ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
       });
       yAxis = new Axis<string>({
@@ -505,6 +579,8 @@ export class BarChart extends Chart {
         orientation: 'left',
         length: plotHeight,
         showChrome,
+        ...chromeColors,
+        ...(bandTickFormat !== undefined ? { tickFormat: bandTickFormat } : {}),
         ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
       });
     } else {
@@ -518,6 +594,8 @@ export class BarChart extends Chart {
         orientation: 'bottom',
         length: plotWidth,
         showChrome,
+        ...chromeColors,
+        ...(bandTickFormat !== undefined ? { tickFormat: bandTickFormat } : {}),
         ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
       });
       yAxis = new Axis<number>({
@@ -528,6 +606,7 @@ export class BarChart extends Chart {
         showGrid,
         gridLength: plotWidth,
         showChrome,
+        ...chromeColors,
         ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
       });
     }

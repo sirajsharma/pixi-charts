@@ -23,6 +23,7 @@ import {
   buildCartesianSeries,
   formatCartesianTooltip,
   resolveAxisOptions,
+  resolveChartTheme,
   resolveHeight,
   resolveMargin,
   resolveWidth,
@@ -264,6 +265,8 @@ export class LineChart extends Chart {
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
 
+    const themeColors = resolveChartTheme(this.spec);
+
     // Build series first so we know the series count (which decides whether
     // a categorical legend is needed). Legend dimensions feed back into
     // layout, which sets the final plot width before scales are built.
@@ -275,6 +278,7 @@ export class LineChart extends Chart {
             type: 'categorical',
             orientation: 'vertical',
             items: series.map((s) => ({ label: s.name, color: s.color })),
+            labelColor: themeColors.legendText,
           })
         : null;
 

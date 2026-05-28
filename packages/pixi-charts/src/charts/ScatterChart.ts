@@ -26,8 +26,11 @@ import { computeLayout } from '../core/layout.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 import { SpatialIndex, type SpatialRecord } from '../utils/quadtree.js';
 
+import type { ResolvedThemeColors } from '../core/theme.js';
+
 import {
   COLOR_GROUP_WARN_THRESHOLD,
+  resolveChartTheme,
   resolveHeight,
   resolveMargin,
   resolveWidth,
@@ -367,13 +370,16 @@ export class ScatterChart extends Chart {
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
 
+    const themeColors = resolveChartTheme(this.spec);
+
     // Build the color resolver + legend spec first — it doesn't depend on
     // plot dimensions, and the legend's width feeds into layout. Done once
     // (not duplicated inside buildSetup) so the COLOR_GROUP_WARN_THRESHOLD
     // warning fires at most once per render.
     const { colorOf, legend: legendSpec } = this.buildColorResolver();
     const showLegend = this.spec.options?.showLegend !== false;
-    const legend = showLegend && legendSpec !== null ? this.constructLegend(legendSpec) : null;
+    const legend =
+      showLegend && legendSpec !== null ? this.constructLegend(legendSpec, themeColors) : null;
 
     const layout = computeLayout({
       totalWidth: canvasW,
@@ -391,7 +397,7 @@ export class ScatterChart extends Chart {
       return;
     }
 
-    const setup = this.buildSetup(plotWidth, plotHeight, colorOf);
+    const setup = this.buildSetup(plotWidth, plotHeight, colorOf, themeColors);
     this.records = setup.records;
     this.xAxis = setup.xAxis;
     this.yAxis = setup.yAxis;
@@ -443,10 +449,20 @@ export class ScatterChart extends Chart {
    *
    * @internal
    */
-  private constructLegend(spec: NonNullable<LegendSpec>): Legend {
+  private constructLegend(spec: NonNullable<LegendSpec>, themeColors: ResolvedThemeColors): Legend {
     return spec.kind === 'continuous'
-      ? new Legend({ type: 'continuous', scheme: spec.scheme, domain: spec.domain })
-      : new Legend({ type: 'categorical', orientation: 'vertical', items: spec.items });
+      ? new Legend({
+          type: 'continuous',
+          scheme: spec.scheme,
+          domain: spec.domain,
+          labelColor: themeColors.legendText,
+        })
+      : new Legend({
+          type: 'categorical',
+          orientation: 'vertical',
+          items: spec.items,
+          labelColor: themeColors.legendText,
+        });
   }
 
   /**
@@ -468,6 +484,7 @@ export class ScatterChart extends Chart {
     plotWidth: number,
     plotHeight: number,
     colorOf: (row: Record<string, unknown>) => number,
+    themeColors: ResolvedThemeColors,
   ): ScatterSetup {
     const enc = this.spec.encoding;
     const xField = enc.x?.field ?? '';
@@ -521,12 +538,18 @@ export class ScatterChart extends Chart {
     const xTitle = this.spec.options?.axisTitles?.x;
     const yTitle = this.spec.options?.axisTitles?.y;
 
+    const chromeColors = {
+      labelColor: themeColors.label,
+      lineColor: themeColors.axis,
+      gridColor: themeColors.grid,
+    };
     const xAxis = new Axis<AxisValue>({
       scale: xAdapter,
       orientation: 'bottom',
       length: plotWidth,
       tickFormat: xTemporal ? (v) => timeFormat('%b %d')(v as Date) : (v) => d3format('~g')(v),
       showChrome,
+      ...chromeColors,
       ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
     });
     const yAxis = new Axis<AxisValue>({
@@ -537,6 +560,7 @@ export class ScatterChart extends Chart {
       showGrid,
       gridLength: plotWidth,
       showChrome,
+      ...chromeColors,
       ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
     });
 

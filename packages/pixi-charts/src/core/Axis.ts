@@ -60,8 +60,15 @@ export interface AxisOptions<TDomain> {
 }
 
 const DEFAULT_TICK_COUNT = 5;
-const TICK_MARK_LENGTH = 6;
-const TICK_LABEL_OFFSET = 4;
+/**
+ * Length of a tick mark, in pixels. Exported so layout helpers that
+ * pre-measure label margins (e.g. `core/text.ts`'s
+ * `measureBandAxisMargin`) can include the same inset the Axis applies at
+ * render time.
+ */
+export const TICK_MARK_LENGTH = 6;
+/** Pixel offset between a tick mark and its label. See {@link TICK_MARK_LENGTH}. */
+export const TICK_LABEL_OFFSET = 4;
 const AXIS_LINE_WIDTH = 1;
 const TICK_LINE_WIDTH = 1;
 const GRID_LINE_WIDTH = 1;

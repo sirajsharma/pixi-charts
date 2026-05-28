@@ -13,6 +13,7 @@ import { Legend } from '../core/Legend.js';
 import { Tooltip } from '../core/Tooltip.js';
 import { tween } from '../core/animation.js';
 import { computeLayout } from '../core/layout.js';
+import { resolveTheme } from '../core/theme.js';
 import type { ChartSpec } from '../spec/ChartSpec.js';
 import { angleInRange, pointInRing, pointToAngle } from '../utils/geometry.js';
 
@@ -297,6 +298,7 @@ export class PieChart extends Chart {
     this.legendItems =
       slices.length >= 2 ? slices.map((s) => ({ label: s.category, color: s.color })) : null;
 
+    const themeColors = resolveTheme(this.spec.options?.theme, this.spec.options?.colors);
     const showLegend = this.spec.options?.showLegend !== false;
     const legend =
       showLegend && this.legendItems !== null && this.legendItems.length > 0
@@ -304,6 +306,7 @@ export class PieChart extends Chart {
             type: 'categorical',
             orientation: 'vertical',
             items: this.legendItems,
+            labelColor: themeColors.legendText,
           })
         : null;
 

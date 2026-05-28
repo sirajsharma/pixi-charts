@@ -6,6 +6,7 @@ import { timeFormat } from 'd3-time-format';
 import { Axis } from '../../core/Axis.js';
 import { getCategoricalColor, type CategoricalSchemeName } from '../../core/ColorScheme.js';
 import type { HitTester, Point } from '../../core/InteractionLayer.js';
+import { resolveTheme, type ResolvedThemeColors } from '../../core/theme.js';
 import {
   bandAdapter,
   linearAdapter,
@@ -117,6 +118,14 @@ export interface CartesianAxisOptions {
   xTitle?: string;
   /** y-axis title text. */
   yTitle?: string;
+  /**
+   * Resolved chrome colors. When set, override the {@link Axis} defaults
+   * for axis line / tick / label / grid color. Resolution happens in each
+   * chart's render via {@link import('../../core/theme.js').resolveTheme} —
+   * this helper stays unaware of the {@link import('../../core/theme.js').Theme}
+   * concept.
+   */
+  colors?: ResolvedThemeColors;
 }
 
 /**
@@ -277,6 +286,20 @@ function buildSeries(spec: ChartSpec): CartesianSeries[] {
   return out;
 }
 
+/**
+ * Color-related Axis options derived from the resolved theme. Centralized so
+ * every Axis constructor in the cartesian helpers can spread the same set.
+ */
+function axisColorOpts(axisOpts: CartesianAxisOptions): {
+  labelColor?: number;
+  lineColor?: number;
+  gridColor?: number;
+} {
+  const c = axisOpts.colors;
+  if (c === undefined) return {};
+  return { labelColor: c.label, lineColor: c.axis, gridColor: c.grid };
+}
+
 /** Build the x scale + adapter + {@link Axis} for the given field type. */
 function buildXAxis(
   series: readonly CartesianSeries[],
@@ -286,6 +309,7 @@ function buildXAxis(
 ): { xAdapter: ScaleAdapter<XValue>; xAxis: Axis<XValue> } {
   const showChrome = axisOpts.showAxes ?? true;
   const title = axisOpts.xTitle;
+  const colorOpts = axisColorOpts(axisOpts);
 
   if (xType === 'temporal') {
     const dates = series.flatMap((s) => s.points.map((p) => p.xRaw as Date));
@@ -300,6 +324,7 @@ function buildXAxis(
       length: plotWidth,
       tickFormat: (v) => timeFormat('%b %d')(v as Date),
       showChrome,
+      ...colorOpts,
       ...(title !== undefined ? { title } : {}),
     });
     return { xAdapter: adapter, xAxis: axis };
@@ -323,6 +348,7 @@ function buildXAxis(
       orientation: 'bottom',
       length: plotWidth,
       showChrome,
+      ...colorOpts,
       ...(title !== undefined ? { title } : {}),
     });
     return { xAdapter: adapter, xAxis: axis };
@@ -340,6 +366,7 @@ function buildXAxis(
     length: plotWidth,
     tickFormat: (v) => d3format('~g')(v as number),
     showChrome,
+    ...colorOpts,
     ...(title !== undefined ? { title } : {}),
   });
   return { xAdapter: adapter, xAxis: axis };
@@ -366,6 +393,7 @@ function buildYAxis(
   const showChrome = axisOpts.showAxes ?? true;
   const showGrid = axisOpts.showGrid ?? true;
   const title = axisOpts.yTitle;
+  const colorOpts = axisColorOpts(axisOpts);
   const axis = new Axis<number>({
     scale: adapter,
     orientation: 'left',
@@ -374,6 +402,7 @@ function buildYAxis(
     showGrid,
     gridLength: plotWidth,
     showChrome,
+    ...colorOpts,
     ...(title !== undefined ? { title } : {}),
   });
   return { yAdapter: adapter, yAxis: axis };
@@ -559,9 +588,19 @@ export function resolveAxisOptions(spec: ChartSpec): CartesianAxisOptions {
   return {
     showAxes: spec.options?.showAxes ?? true,
     showGrid: spec.options?.showGrid ?? true,
+    colors: resolveTheme(spec.options?.theme, spec.options?.colors),
     ...(xTitle !== undefined && xTitle !== '' ? { xTitle } : {}),
     ...(yTitle !== undefined && yTitle !== '' ? { yTitle } : {}),
   };
+}
+
+/**
+ * Resolve the chrome theme from a spec. Charts that build their own
+ * (non-cartesian) axes or legends — Pie, Heatmap — use this directly instead
+ * of going through {@link resolveAxisOptions}.
+ */
+export function resolveChartTheme(spec: ChartSpec): ResolvedThemeColors {
+  return resolveTheme(spec.options?.theme, spec.options?.colors);
 }
 
 /** Resolve the initial canvas width: explicit option → container size → default. */

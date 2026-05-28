@@ -21,6 +21,7 @@ export type {
   AnimationOptions,
   FieldType,
 } from './spec/ChartSpec.js';
+export type { Theme, ThemeColors } from './core/theme.js';
 
 // --- Imperative API (escape hatch for advanced consumers) ---
 export { Chart } from './core/Chart.js';

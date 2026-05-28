@@ -195,7 +195,7 @@ type MockSpriteT = {
   eventMode: string;
   handlers: Map<string, Set<(e: unknown) => void>>;
 };
-type MockTxt = { text: string };
+type MockTxt = { text: string; destroyed: boolean };
 type MockApp = {
   destroy: ReturnType<typeof vi.fn>;
   ticker: { add: ReturnType<typeof vi.fn> };
@@ -554,7 +554,9 @@ describe('BarChart — legend', () => {
     const chart = new BarChart({ container, spec: makeSpec() });
     await chart.init();
     // No color field → no extra non-axis swatch labels beyond categories.
-    const labels = MockText.instances.map((t) => t.text);
+    // Exclude transient Text objects created (and immediately destroyed) by
+    // the pre-layout band-axis label measurement.
+    const labels = MockText.instances.filter((t) => !t.destroyed).map((t) => t.text);
     expect(labels.filter((t) => t === 'A')).toHaveLength(1);
     chart.destroy();
   });
@@ -769,5 +771,75 @@ describe('BarChart — hover decoration', () => {
       chart.destroy();
     }).not.toThrow();
     expect(chart.destroyed).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Long band-axis labels — horizontal bar margin sizing & truncation          *
+ * -------------------------------------------------------------------------- */
+
+const LONG_LABELS = [
+  'Customer Relationship Management Platform',
+  'Enterprise Resource Planning Suite',
+  'Data Warehouse & Analytics Stack',
+];
+
+function horizontalLongLabelSpec(): ChartSpec {
+  return {
+    type: 'bar',
+    data: LONG_LABELS.map((name, i) => ({ name, count: (i + 1) * 10 })),
+    encoding: {
+      x: { field: 'count', type: 'quantitative' },
+      y: { field: 'name', type: 'categorical' },
+    },
+    options: { orientation: 'horizontal' },
+    animation: { enter: false },
+  };
+}
+
+describe('BarChart — long band-axis labels (horizontal)', () => {
+  it('renders ellipsis-truncated labels when categories exceed the margin cap', async () => {
+    // BarChart's mocked PIXI Text reports a fixed width=30 regardless of
+    // string length, so the measurement compares 30 against the cap. To
+    // force the truncation path, shrink the container so the cap (canvasW *
+    // 0.35) drops below the desired margin (30 + tick/label inset).
+    // canvasW=120 → cap=42, inset≈14, desired=44 > cap.
+    const container = makeContainer(120, 300);
+    const chart = new BarChart({ container, spec: horizontalLongLabelSpec() });
+    await chart.init();
+
+    const rendered = MockText.instances.filter((t) => !t.destroyed).map((t) => t.text);
+    // None of the original strings should appear verbatim — they'd overflow.
+    for (const original of LONG_LABELS) {
+      expect(rendered).not.toContain(original);
+    }
+    // Each original should have a corresponding ellipsized variant rendered.
+    const ellipsized = rendered.filter((t) => t.endsWith('…'));
+    expect(ellipsized.length).toBeGreaterThanOrEqual(LONG_LABELS.length);
+
+    chart.destroy();
+  });
+
+  it('renders short categories verbatim (default-preservation: no truncation when not needed)', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new BarChart({
+      container,
+      spec: {
+        ...horizontalLongLabelSpec(),
+        data: [
+          { name: 'A', count: 10 },
+          { name: 'B', count: 20 },
+          { name: 'C', count: 30 },
+        ],
+      },
+    });
+    await chart.init();
+
+    const rendered = MockText.instances.filter((t) => !t.destroyed).map((t) => t.text);
+    expect(rendered).toEqual(expect.arrayContaining(['A', 'B', 'C']));
+    // No ellipsis — short labels fit the default margin cleanly.
+    expect(rendered.some((t) => t.endsWith('…'))).toBe(false);
+
+    chart.destroy();
   });
 });

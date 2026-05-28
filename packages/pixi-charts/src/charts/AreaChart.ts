@@ -23,6 +23,7 @@ import {
   buildCartesianSeries,
   formatCartesianTooltip,
   resolveAxisOptions,
+  resolveChartTheme,
   resolveHeight,
   resolveMargin,
   resolveWidth,
@@ -233,6 +234,8 @@ export class AreaChart extends Chart {
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
 
+    const themeColors = resolveChartTheme(this.spec);
+
     // Series first → optional Legend → layout → scales. Same flow as LineChart;
     // see the comment block there for why this ordering matters.
     const series = buildCartesianSeries(this.spec);
@@ -243,6 +246,7 @@ export class AreaChart extends Chart {
             type: 'categorical',
             orientation: 'vertical',
             items: series.map((s) => ({ label: s.name, color: s.color })),
+            labelColor: themeColors.legendText,
           })
         : null;
 

@@ -180,6 +180,69 @@ describe('Tooltip — edge avoidance', () => {
     expect(parseInt(el.style.left, 10)).toBeLessThan(380);
     expect(parseInt(el.style.top, 10)).toBeLessThan(280);
   });
+
+  it('clamps to left=0 when cursor is at the left edge (no flip needed)', () => {
+    const container = makeContainer(400, 300);
+    const tooltip = new Tooltip({ container });
+    stubTooltipSize(container, 60, 30);
+
+    // x=0: preferred placement is 0 + 8 = 8 (already inside) — no overflow,
+    // no clamp action needed. Sanity check that the new clamp didn't push it.
+    tooltip.show({ x: 0, y: 50, content: 'left' });
+    const el = container.lastElementChild as HTMLElement;
+    expect(parseInt(el.style.left, 10)).toBe(8);
+  });
+
+  it('clamps to left=0 when the flipped position itself overflows the left edge', () => {
+    const container = makeContainer(400, 300);
+    const tooltip = new Tooltip({ container });
+    // Tooltip wider than the cursor offset can accommodate. Preferred
+    // placement at x=395 + 8 = 403 overflows right (403 + 200 > 400), flip
+    // would target x=395 - 200 - 8 = 187 — that fits, so no clamp needed
+    // for this branch. Use a scenario where the FLIP overflows left:
+    // x=5, tooltip width 200 → preferred 5+8+200=213 (fits, no flip).
+    // Cursor at x=395 with tooltip width 410 → flip target = 395-410-8 = -23.
+    stubTooltipSize(container, 410, 30);
+    tooltip.show({ x: 395, y: 50, content: 'wide' });
+    const el = container.lastElementChild as HTMLElement;
+    expect(parseInt(el.style.left, 10)).toBe(0);
+  });
+
+  it('clamps to top=0 when the flipped position itself overflows the top edge', () => {
+    const container = makeContainer(400, 300);
+    const tooltip = new Tooltip({ container });
+    // Cursor at bottom with a tooltip taller than the canvas → flip target
+    // 280 - 320 - 8 = -48; should clamp to 0.
+    stubTooltipSize(container, 60, 320);
+    tooltip.show({ x: 50, y: 280, content: 'tall' });
+    const el = container.lastElementChild as HTMLElement;
+    expect(parseInt(el.style.top, 10)).toBe(0);
+  });
+
+  it('aligns to the near edge when the tooltip is larger than the container', () => {
+    const container = makeContainer(100, 100);
+    const tooltip = new Tooltip({ container });
+    // Tooltip 200×200 in a 100×100 container. Whatever flip path runs, the
+    // final position must clamp to (0, 0) — aligning to the near edge is
+    // preferable to escaping past it.
+    stubTooltipSize(container, 200, 200);
+    tooltip.show({ x: 50, y: 50, content: 'huge' });
+    const el = container.lastElementChild as HTMLElement;
+    expect(parseInt(el.style.left, 10)).toBe(0);
+    expect(parseInt(el.style.top, 10)).toBe(0);
+  });
+
+  it('center hover position is unchanged (no clamp action when no overflow)', () => {
+    const container = makeContainer(400, 300);
+    const tooltip = new Tooltip({ container });
+    stubTooltipSize(container, 60, 30);
+
+    tooltip.show({ x: 100, y: 100, content: 'center' });
+    const el = container.lastElementChild as HTMLElement;
+    // 100 + 8 = 108 horizontally, 100 + 8 = 108 vertically. No flip, no clamp.
+    expect(el.style.left).toBe('108px');
+    expect(el.style.top).toBe('108px');
+  });
 });
 
 describe('Tooltip — hide()', () => {

@@ -19,6 +19,16 @@ const fieldTypeSchema = z.enum(['quantitative', 'categorical', 'temporal']);
 const chartTypeSchema = z.enum(['line', 'area', 'bar', 'scatter', 'heatmap', 'pie']);
 const easingSchema = z.enum(['linear', 'easeOut', 'easeInOut']);
 const orientationSchema = z.enum(['vertical', 'horizontal']);
+const themeSchema = z.enum(['light', 'dark']);
+
+const themeColorsSchema = z
+  .object({
+    axis: z.number().optional(),
+    label: z.number().optional(),
+    grid: z.number().optional(),
+    legendText: z.number().optional(),
+  })
+  .strict();
 
 const encodingFieldSchema = z.object({
   field: z.string(),
@@ -83,6 +93,11 @@ const chartOptionsSchema = z.object({
   showAxes: z.boolean().optional(),
   showGrid: z.boolean().optional(),
   axisTitles: axisTitlesSchema.optional(),
+  // Theme preset (axis/label/grid/legendText defaults) and per-color
+  // overrides. Inert when the chart has no chrome (pie has no axes, but the
+  // legend text color still applies). Shape-validated for every spec.
+  theme: themeSchema.optional(),
+  colors: themeColorsSchema.optional(),
 });
 
 const AXIS_TITLE_WARN_LENGTH = 100;
