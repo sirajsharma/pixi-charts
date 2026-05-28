@@ -99,6 +99,35 @@ export interface LineChartOptions {
  * {@link HIT_TEST_RADIUS_PX}. Band adapters iterate the domain to find the
  * band the pointer falls inside. Across multiple series, the closest point
  * in pixel space wins.
+ *
+ * For most use cases, prefer the declarative {@link render} entry point —
+ * use this class directly only when you need fine-grained lifecycle control
+ * or want to bypass spec validation.
+ *
+ * @example
+ * ```ts
+ * import { LineChart } from 'pixi-charts';
+ *
+ * const chart = new LineChart({
+ *   container: document.getElementById('chart')!,
+ *   spec: {
+ *     type: 'line',
+ *     data: [
+ *       { month: 'Jan', revenue: 12_400 },
+ *       { month: 'Feb', revenue: 13_900 },
+ *       { month: 'Mar', revenue: 15_200 },
+ *     ],
+ *     encoding: {
+ *       x: { field: 'month', type: 'categorical' },
+ *       y: { field: 'revenue', type: 'quantitative' },
+ *     },
+ *   },
+ * });
+ * await chart.init();
+ *
+ * // later, e.g. when the component unmounts
+ * chart.destroy();
+ * ```
  */
 export class LineChart extends Chart {
   private readonly spec: ChartSpec;

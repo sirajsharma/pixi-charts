@@ -135,6 +135,34 @@ function angularExtent(start: number, end: number): number {
  * render runs at the tail of {@link init}, resize redraws at the final
  * state (the enter animation does not re-run), {@link destroy} is
  * idempotent.
+ *
+ * For most use cases, prefer the declarative {@link render} entry point —
+ * use this class directly only when you need fine-grained lifecycle control.
+ *
+ * @example
+ * ```ts
+ * import { PieChart } from 'pixi-charts';
+ *
+ * const chart = new PieChart({
+ *   container: document.getElementById('chart')!,
+ *   spec: {
+ *     type: 'pie',
+ *     data: [
+ *       { browser: 'Chrome', share: 64 },
+ *       { browser: 'Safari', share: 19 },
+ *       { browser: 'Firefox', share: 8 },
+ *       { browser: 'Other', share: 9 },
+ *     ],
+ *     encoding: {
+ *       x: { field: 'browser', type: 'categorical' },
+ *       value: { field: 'share', type: 'quantitative' },
+ *     },
+ *     options: { innerRadius: 60 }, // donut; omit or 0 for a true pie
+ *   },
+ * });
+ * await chart.init();
+ * chart.destroy();
+ * ```
  */
 export class PieChart extends Chart {
   private readonly spec: ChartSpec;

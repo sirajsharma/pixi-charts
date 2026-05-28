@@ -152,6 +152,35 @@ export interface HeatmapChartOptions {
  * texture is freed in {@link destroy} via `texture.destroy(true)` — same
  * GPU-memory discipline `ScatterChart` established for its shared particle
  * texture, and covered by an explicit test.
+ *
+ * For most use cases, prefer the declarative {@link render} entry point —
+ * use this class directly only when you need fine-grained lifecycle control.
+ *
+ * @example
+ * ```ts
+ * import { HeatmapChart } from 'pixi-charts';
+ *
+ * const chart = new HeatmapChart({
+ *   container: document.getElementById('chart')!,
+ *   spec: {
+ *     type: 'heatmap',
+ *     data: [
+ *       { hour: '00', day: 'Mon', count: 12 },
+ *       { hour: '00', day: 'Tue', count: 18 },
+ *       { hour: '01', day: 'Mon', count: 9 },
+ *       // ...
+ *     ],
+ *     encoding: {
+ *       x: { field: 'hour', type: 'categorical' },
+ *       y: { field: 'day', type: 'categorical' },
+ *       color: { field: 'count', type: 'quantitative' },
+ *       value: { field: 'count', type: 'quantitative' },
+ *     },
+ *   },
+ * });
+ * await chart.init();
+ * chart.destroy();
+ * ```
  */
 export class HeatmapChart extends Chart {
   private readonly spec: ChartSpec;

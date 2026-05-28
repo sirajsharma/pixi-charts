@@ -147,6 +147,33 @@ export interface BarChartOptions {
  * {@link formatCategoryValueTooltip} string helper is shared. Like every
  * chart, this extends {@link Chart} directly — composition, not a chart
  * inheritance tree.
+ *
+ * For most use cases, prefer the declarative {@link render} entry point —
+ * use this class directly only when you need fine-grained lifecycle control.
+ *
+ * @example
+ * ```ts
+ * import { BarChart } from 'pixi-charts';
+ *
+ * const chart = new BarChart({
+ *   container: document.getElementById('chart')!,
+ *   spec: {
+ *     type: 'bar',
+ *     data: [
+ *       { team: 'Alpha', wins: 12 },
+ *       { team: 'Beta', wins: 9 },
+ *       { team: 'Gamma', wins: 15 },
+ *     ],
+ *     encoding: {
+ *       x: { field: 'team', type: 'categorical' },
+ *       y: { field: 'wins', type: 'quantitative' },
+ *     },
+ *     options: { orientation: 'vertical' },
+ *   },
+ * });
+ * await chart.init();
+ * chart.destroy();
+ * ```
  */
 export class BarChart extends Chart {
   private readonly spec: ChartSpec;

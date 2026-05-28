@@ -178,6 +178,33 @@ export interface ScatterChartOptions {
  * this class destroys it explicitly in {@link destroy} (it lives for the
  * chart's lifetime — not recreated per render). Skipping that is a real
  * per-instance GPU leak — covered by a test.
+ *
+ * For most use cases, prefer the declarative {@link render} entry point —
+ * use this class directly only when you need fine-grained lifecycle control.
+ *
+ * @example
+ * ```ts
+ * import { ScatterChart } from 'pixi-charts';
+ *
+ * const chart = new ScatterChart({
+ *   container: document.getElementById('chart')!,
+ *   spec: {
+ *     type: 'scatter',
+ *     data: [
+ *       { x: 1.2, y: 3.4, group: 'a' },
+ *       { x: 2.7, y: 1.8, group: 'b' },
+ *       { x: 4.1, y: 5.2, group: 'a' },
+ *     ],
+ *     encoding: {
+ *       x: { field: 'x', type: 'quantitative' },
+ *       y: { field: 'y', type: 'quantitative' },
+ *       color: { field: 'group', type: 'categorical' },
+ *     },
+ *   },
+ * });
+ * await chart.init();
+ * chart.destroy();
+ * ```
  */
 export class ScatterChart extends Chart {
   private readonly spec: ChartSpec;

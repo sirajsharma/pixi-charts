@@ -30,6 +30,22 @@ export interface ChartOptions {
  * Subclasses implement the abstract {@link render} method. Anything
  * chart-type-specific — axes, legend, tooltip, data marshalling — composes
  * out of small modules rather than extending this class further.
+ *
+ * `Chart` is abstract — instantiate a concrete subclass (e.g.
+ * {@link import('../charts/LineChart.js').LineChart}) or, in most cases,
+ * use the declarative {@link import('../spec/render.js').render} entry
+ * point which returns a `Chart` already constructed and initialised.
+ *
+ * @example
+ * ```ts
+ * import { LineChart } from 'pixi-charts';
+ *
+ * const chart = new LineChart({ container, spec });
+ * await chart.init();    // creates the PIXI app and does the first render
+ *
+ * // ...later
+ * chart.destroy();       // idempotent — safe to call more than once
+ * ```
  */
 export abstract class Chart {
   protected app: Application | null = null;

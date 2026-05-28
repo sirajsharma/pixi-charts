@@ -194,42 +194,6 @@ function formatIssue(issue: z.ZodIssue, input: unknown): string {
 const KNOWN_SPEC_KEYS = new Set(['type', 'data', 'encoding', 'options', 'animation']);
 
 /**
- * Parse and validate a {@link ChartSpec} candidate.
- *
- * - On success, returns the input cast as a typed `ChartSpec`.
- * - On failure, throws a {@link ChartSpecValidationError} whose message
- *   lists every issue with its path, the received value, the expected
- *   shape, and (where useful) a minimal example.
- *
- * Beyond shape validation this also enforces a few semantic rules:
- *
- * - `data` must be non-empty (a zero-row chart is almost always a bug).
- * - Every `field` referenced by `encoding` must exist in the first data
- *   row's keys. Catches typos like `'revenu'` for `'revenue'`.
- * - For `type: 'line'` and `type: 'area'`, both `encoding.x` and
- *   `encoding.y` are required.
- * - For `type: 'bar'`, the category/value axis roles depend on
- *   `options.orientation` — see {@link requireBarEncoding}.
- * - For `type: 'scatter'`, `encoding.x`/`encoding.y` are required and must
- *   be quantitative or temporal; quantitative-color and size fields are
- *   sanity-checked with warnings — see {@link requireScatterEncoding}.
- *
- * `options.orientation` is validated for its *shape* (one of `'vertical'` /
- * `'horizontal'`) for every spec, but its *meaning* is read only for
- * `type: 'bar'`. Line, area, and other types that set it are neither warned
- * nor errored — the field is deliberately on the shared `ChartOptions`.
- *
- * - For `type: 'heatmap'`, both axes must be categorical and `encoding.color`
- *   and `encoding.value` are required — see {@link requireHeatmapEncoding}.
- * - For `type: 'pie'`, `encoding.x` (categorical, the slice category) and
- *   `encoding.value` are required; `encoding.color` may not be quantitative —
- *   see {@link requirePieEncoding}.
- *
- * Unknown top-level keys do NOT fail validation — a `console.warn` is
- * emitted instead. This protects consumers writing forward-compat code
- * (e.g. setting a future `theme:` field) without locking the spec.
- */
-/**
  * Cartesian line-family encoding rule: `x` and `y` are both required. Used
  * for `'line'` and `'area'` (and any future cartesian type) so the teaching
  * message stays identical and the check isn't copy-pasted per type.
@@ -579,6 +543,63 @@ function requirePieEncoding(spec: ChartSpec): void {
   }
 }
 
+/**
+ * Parse and validate a {@link ChartSpec} candidate.
+ *
+ * On success, returns the input cast as a typed `ChartSpec`. On failure,
+ * throws a {@link ChartSpecValidationError} whose message lists every issue
+ * with its path, the received value, the expected shape, and (where useful)
+ * a minimal example.
+ *
+ * Beyond shape validation this also enforces a few semantic rules:
+ *
+ * - `data` must be non-empty (a zero-row chart is almost always a bug).
+ * - Every `field` referenced by `encoding` must exist in the first data
+ *   row's keys. Catches typos like `'revenu'` for `'revenue'`.
+ * - For `type: 'line'` and `type: 'area'`, both `encoding.x` and
+ *   `encoding.y` are required.
+ * - For `type: 'bar'`, the category/value axis roles depend on
+ *   `options.orientation`.
+ * - For `type: 'scatter'`, `encoding.x`/`encoding.y` are required and must
+ *   be quantitative or temporal; quantitative-color and size fields are
+ *   sanity-checked with warnings.
+ * - For `type: 'heatmap'`, both axes must be categorical and
+ *   `encoding.color` and `encoding.value` are required.
+ * - For `type: 'pie'`, `encoding.x` (categorical, the slice category) and
+ *   `encoding.value` are required; `encoding.color` may not be quantitative.
+ *
+ * `options.orientation` is validated for its *shape* (one of `'vertical'` /
+ * `'horizontal'`) for every spec, but its *meaning* is read only for
+ * `type: 'bar'`. Line, area, and other types that set it are neither warned
+ * nor errored — the field is deliberately on the shared `ChartOptions`.
+ *
+ * Unknown top-level keys do NOT fail validation — a `console.warn` is
+ * emitted instead. This protects consumers writing forward-compat code
+ * (e.g. setting a future `theme:` field) without locking the spec.
+ *
+ * @param input - A candidate spec to validate. Typically `unknown` from a
+ *   `JSON.parse`, an external API, or untyped configuration.
+ * @returns The same input value, typed as a {@link ChartSpec}.
+ * @throws {ChartSpecValidationError} When the candidate fails shape or
+ *   semantic validation. The error's `message` lists every issue in a
+ *   teaching format.
+ *
+ * @example
+ * ```ts
+ * import { validateChartSpec, ChartSpecValidationError, render } from 'pixi-charts';
+ *
+ * try {
+ *   const spec = validateChartSpec(JSON.parse(userInput));
+ *   await render(spec, container);
+ * } catch (err) {
+ *   if (err instanceof ChartSpecValidationError) {
+ *     console.error(err.message);
+ *   } else {
+ *     throw err;
+ *   }
+ * }
+ * ```
+ */
 export function validateChartSpec(input: unknown): ChartSpec {
   const parsed = chartSpecSchema.safeParse(input);
   if (!parsed.success) {

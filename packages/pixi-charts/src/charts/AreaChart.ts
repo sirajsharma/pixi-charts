@@ -80,6 +80,32 @@ export interface AreaChartOptions {
  * overlap, with {@link AREA_FILL_ALPHA} keeping overlaps readable. Stacked
  * areas (cumulative baselines) are a future feature with their own design
  * decisions and are intentionally not implemented here.
+ *
+ * For most use cases, prefer the declarative {@link render} entry point —
+ * use this class directly only when you need fine-grained lifecycle control.
+ *
+ * @example
+ * ```ts
+ * import { AreaChart } from 'pixi-charts';
+ *
+ * const chart = new AreaChart({
+ *   container: document.getElementById('chart')!,
+ *   spec: {
+ *     type: 'area',
+ *     data: [
+ *       { day: 1, visits: 240 },
+ *       { day: 2, visits: 312 },
+ *       { day: 3, visits: 198 },
+ *     ],
+ *     encoding: {
+ *       x: { field: 'day', type: 'quantitative' },
+ *       y: { field: 'visits', type: 'quantitative' },
+ *     },
+ *   },
+ * });
+ * await chart.init();
+ * chart.destroy();
+ * ```
  */
 export class AreaChart extends Chart {
   private readonly spec: ChartSpec;
