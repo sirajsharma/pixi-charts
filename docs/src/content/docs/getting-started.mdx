@@ -4,8 +4,8 @@ description: Install pixi-charts and render your first chart in under five minut
 ---
 
 import { LiveChart } from '../../components/LiveChart';
-import { SpecBlock } from '../../components/SpecBlock';
 import { gettingStartedSpec } from '../../examples/getting-started-spec';
+import { gettingStartedBarSpec } from '../../examples/getting-started-bar';
 
 Render your first chart in under five minutes.
 
@@ -13,13 +13,17 @@ Render your first chart in under five minutes.
 
 ```sh
 pnpm add pixi-charts pixi.js
+# or
+npm install pixi-charts pixi.js
+# or
+yarn add pixi-charts pixi.js
 ```
 
-`pixi.js` is a peer dependency — install it alongside the library so you control the exact PixiJS version your app uses. PixiJS v8 is ESM-only and so is pixi-charts; this works out of the box with Vite, esbuild, Rollup, webpack 5+, Next.js, Astro, and any other modern bundler.
+`pixi.js` is a peer dependency — install it alongside the library so you control the exact PixiJS version your app uses. PixiJS v8 is ESM-only, and so is `pixi-charts`; this works out of the box with Vite, esbuild, Rollup, webpack 5+, Next.js, Astro, and any other modern bundler.
 
 ## Your first chart
 
-Every chart is described by a single `ChartSpec` value: declarative JSON that says *what* to render, not *how*. Pass it to `render()` along with the DOM element that should host the chart.
+Every chart is described by a single [`ChartSpec`](/api/interfaces/chartspec/) value: declarative JSON that says *what* to render, not *how*. Pass it to [`render`](/api/functions/render/) along with the DOM element that should host the chart.
 
 ```ts
 import { render } from 'pixi-charts';
@@ -49,14 +53,100 @@ That spec, rendered live:
 
 <LiveChart client:only="react" spec={gettingStartedSpec} height={320} ariaLabel="Monthly revenue line chart for one year" />
 
-## The spec model
+## Understanding ChartSpec
 
-A `ChartSpec` has four parts. **`type`** picks one of the six chart kinds — `line`, `area`, `bar`, `scatter`, `heatmap`, or `pie`. **`data`** is an array of plain objects; one row per datum. **`encoding`** binds object fields to visual channels (`x`, `y`, `color`, `value`, `size`) and tells the library what kind of scale to build (`quantitative`, `temporal`, or `categorical`). **`options`** and **`animation`** are optional knobs for layout, legend, tooltips, and enter transitions.
+A spec has four parts:
 
-The same spec shape works across every chart type — switching `type: 'line'` to `type: 'bar'` re-renders the data as bars without any other code change. That's the point: charts are values, not imperative drawing routines. The library validates the spec up front with a zod schema and throws teaching-style errors when something's off, so misshaped specs fail fast with a useful message.
+- **`type`** picks one of the six chart kinds: `'line'`, `'area'`, `'bar'`, `'scatter'`, `'heatmap'`, or `'pie'` (see [`ChartType`](/api/type-aliases/charttype/)).
+- **`data`** is an array of plain objects, one row per datum. No special shape required — bring whatever your API or CSV gives you.
+- **`encoding`** binds object fields to visual channels — `x`, `y`, `color`, `size`, `value` — and tells the library which kind of scale to build (`'quantitative'`, `'temporal'`, or `'categorical'`). See [`ChartEncoding`](/api/interfaces/chartencoding/) for the full shape.
+- **`options`** (optional) is layout, legend, tooltip, and orientation knobs. **`animation`** (optional) controls the enter transition. See [`ChartOptions`](/api/interfaces/chartoptions/) and [`AnimationOptions`](/api/interfaces/animationoptions/).
 
-## Next steps
+The same spec shape works across every chart type. That's the point: charts are *values*, not imperative drawing routines. The library validates the spec up front with a zod schema and throws teaching-style errors when something's off, so misshaped specs fail fast with a useful message. It also makes specs trivial to generate from an LLM, a config file, or a JSON-driven dashboard tool.
 
-- **[Line Chart](/charts/line/)** — the most detailed gallery page; the template every other chart page follows.
-- **Other chart types** — Area, Bar, Scatter, Heatmap, Pie & Donut. (Stubs for now; full pages land in subsequent sessions.)
-- **Performance** — the dedicated benchmark page is coming next session.
+## Switching chart types
+
+Because the spec shape is unified, swapping `type` re-renders the same data as a different visualization — no other code changes. Here's the same monthly-revenue data as a line and as a bar chart:
+
+<LiveChart client:only="react" spec={gettingStartedSpec} height={280} ariaLabel="Monthly revenue as a line chart" />
+
+<LiveChart client:only="react" spec={gettingStartedBarSpec} height={280} ariaLabel="Monthly revenue as a bar chart" />
+
+The only difference between those two specs is `type: 'line'` vs. `type: 'bar'`. Same data, same encoding, different chart.
+
+## Common patterns
+
+### Responsive resize
+
+The chart sizes itself to the container's `clientWidth` × `clientHeight` and re-renders on resize via `ResizeObserver`. Give the container a percentage width and the chart fills it:
+
+```ts
+const container = document.getElementById('chart');
+container.style.width = '100%';
+container.style.height = '400px';
+await render(spec, container);
+```
+
+No manual resize wiring required.
+
+### Cleanup
+
+The object returned by `render()` is a [`Chart`](/api/classes/chart/) instance. Call `.destroy()` on it when the chart is leaving the DOM — that cancels in-flight tweens, disconnects the `ResizeObserver`, destroys the PIXI Application, and removes the canvas. `.destroy()` is idempotent, so it's safe to call more than once.
+
+In a React component:
+
+```tsx
+import { useLayoutEffect, useRef } from 'react';
+import { render, type ChartSpec, type Chart } from 'pixi-charts';
+
+export function MyChart({ spec }: { spec: ChartSpec }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!containerRef.current) return;
+    let chart: Chart | null = null;
+    let cancelled = false;
+
+    render(spec, containerRef.current).then((c) => {
+      if (cancelled) c.destroy();
+      else chart = c;
+    });
+
+    return () => {
+      cancelled = true;
+      chart?.destroy();
+    };
+  }, [spec]);
+
+  return <div ref={containerRef} style={{ width: '100%', height: 400 }} />;
+}
+```
+
+### Validating a spec before rendering
+
+If the spec comes from an external source (JSON config, a server response, an LLM), validate it before handing it to `render()`. [`validateChartSpec`](/api/functions/validatechartspec/) throws a [`ChartSpecValidationError`](/api/classes/chartspecvalidationerror/) with a teaching-format message that points at the offending field:
+
+```ts
+import { validateChartSpec, ChartSpecValidationError, render } from 'pixi-charts';
+
+try {
+  const spec = validateChartSpec(JSON.parse(jsonString));
+  await render(spec, container);
+} catch (err) {
+  if (err instanceof ChartSpecValidationError) {
+    // err.message lists every issue with its path, expected shape,
+    // and (where useful) a minimal example
+    console.error(err.message);
+  } else {
+    throw err;
+  }
+}
+```
+
+`render()` calls `validateChartSpec` internally, so this is only necessary if you want to surface validation errors yourself (e.g. to a config editor's error panel).
+
+## What's next
+
+- **[Chart Gallery](/charts/line/)** — every chart type with live examples and a per-chart encoding reference.
+- **[Performance](/performance/)** — the library handles 100k+ points at 60fps. See how, and how it compares to Chart.js.
+- **[API Reference](/api/)** — every type, every option, every method.

@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import react from '@astrojs/react';
+import starlightTypeDoc, { typeDocSidebarGroup } from 'starlight-typedoc';
 
 // https://astro.build/config
 export default defineConfig({
@@ -18,6 +19,22 @@ export default defineConfig({
           href: 'https://github.com/sirajsharma/pixi-charts',
         },
       ],
+      plugins: [
+        starlightTypeDoc({
+          entryPoints: ['../packages/pixi-charts/src/index.ts'],
+          tsconfig: '../packages/pixi-charts/tsconfig.json',
+          output: 'api',
+          sidebar: {
+            label: 'API Reference',
+            collapsed: false,
+          },
+          typeDoc: {
+            excludeInternal: true,
+            excludePrivate: true,
+            githubPages: false,
+          },
+        }),
+      ],
       sidebar: [
         { label: 'Introduction', link: '/' },
         { label: 'Getting Started', link: '/getting-started/' },
@@ -33,7 +50,7 @@ export default defineConfig({
           ],
         },
         { label: 'Performance', link: '/performance/' },
-        { label: 'API Reference', link: '/api/', badge: 'TODO' },
+        typeDocSidebarGroup,
       ],
     }),
   ],

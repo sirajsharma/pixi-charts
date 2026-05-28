@@ -35,6 +35,8 @@ They're the wrong pick when only a handful of cells have meaningful values (a so
 
 `size` is not used by heatmaps.
 
+See [`ChartEncoding`](/api/interfaces/chartencoding/) and [`ColorEncoding`](/api/interfaces/colorencoding/) for the full type shapes, or [`HeatmapChart`](/api/classes/heatmapchart/) for the imperative API.
+
 ## Sparse cells
 
 Heatmap accepts a partial grid — feed it an array missing some (x, y) pairs and those cells render transparent. Tooltips return `null` over empty cells, so the hover layer stays quiet.

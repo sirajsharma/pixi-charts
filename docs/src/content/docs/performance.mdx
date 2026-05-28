@@ -53,8 +53,8 @@ LTTB downsampling. PixiJS turns the resulting numbers into GPU primitives — `P
 for scatter clouds, `Graphics` for axes and lines — so each chart type renders through one or
 two batched draw calls regardless of the row count.
 
-Every chart accepts the same `ChartSpec` shape — `{ type, data, encoding, options, animation }` —
-and dispatches through a single entry point:
+Every chart accepts the same [`ChartSpec`](/api/interfaces/chartspec/) shape — `{ type, data, encoding, options, animation }` —
+and dispatches through a single entry point, [`render`](/api/functions/render/):
 
 ```ts
 import { render } from 'pixi-charts';
@@ -64,7 +64,7 @@ const chart = await render(spec, document.getElementById('chart'));
 chart.destroy();
 ```
 
-The lifecycle is deliberately explicit. Constructors do nothing observable — no PIXI, no DOM,
+The lifecycle is deliberately explicit on the returned [`Chart`](/api/classes/chart/) instance. Constructors do nothing observable — no PIXI, no DOM,
 no async work. `init()` creates the `Application` and runs the first render; `destroy()` is the
 single drain that cancels tweens, disconnects the resize observer, destroys the PIXI app, and
 removes the canvas. There is no global state: every chart owns its own application instance,
