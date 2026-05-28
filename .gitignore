@@ -4,6 +4,10 @@ coverage/
 .docs/
 docs/api/
 
+# starlight-typedoc regenerates these on every build; only index.mdx is hand-written
+docs/src/content/docs/api/**
+!docs/src/content/docs/api/index.mdx
+
 *.log
 npm-debug.log*
 pnpm-debug.log*
