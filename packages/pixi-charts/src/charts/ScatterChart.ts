@@ -4,8 +4,8 @@ import { scaleLinear, scaleSqrt, scaleTime } from 'd3-scale';
 import { timeFormat } from 'd3-time-format';
 import { Container, Graphics, Particle, ParticleContainer, Sprite, type Texture } from 'pixi.js';
 
-import { Axis } from '../core/Axis.js';
-import { Chart } from '../core/Chart.js';
+import { Axis, type AxisOptions } from '../core/Axis.js';
+import { Chart, type UpdateOptions } from '../core/Chart.js';
 import {
   getCategoricalColor,
   getSequentialColor,
@@ -108,8 +108,8 @@ interface ScatterSetup {
   records: ScatterRecord[];
   xAdapter: ScaleAdapter<AxisValue>;
   yAdapter: ScaleAdapter<AxisValue>;
-  xAxis: Axis<AxisValue>;
-  yAxis: Axis<AxisValue>;
+  xAxisOpts: AxisOptions<AxisValue>;
+  yAxisOpts: AxisOptions<AxisValue>;
   /** Largest rendered radius, for sizing the hit target. */
   maxRadius: number;
 }
@@ -164,64 +164,63 @@ export interface ScatterChartOptions {
  * jitter. A **size legend** is a deliberate future addition (colour legends
  * ship now).
  *
- * ## Lifecycle (identical to the other charts)
+ * ## Lifecycle
  *
  * ```ts
  * const chart = new ScatterChart({ container, spec });
- * await chart.init();   // creates the PIXI app AND does the first render
- * chart.destroy();      // idempotent; frees the shared texture + primitives
+ * await chart.init();      // creates the PIXI app AND does the first render
+ * chart.update(newRows);   // warm path: reuses GL context + ParticleContainer
+ * chart.destroy();         // idempotent; frees the shared texture + primitives
  * ```
  *
- * Construction is pure. Resize rebuilds scales, re-projects points, updates
- * particle transforms in place, rebuilds the spatial index, and draws at the
- * final state (no enter re-run).
+ * Construction is pure. {@link Chart.update} reuses the persistent
+ * {@link ParticleContainer}, particle texture, axes, legend, and
+ * interaction layer; only the data-derived particles, spatial index,
+ * scale domains, and axis ticks are recomputed. {@link Chart.update}
+ * ignores `{ animate: true }` for scatter (always snaps) — animated
+ * updates across changing point counts genuinely need diffing.
  *
  * **Texture lifecycle.** The shared particle texture is GPU-backed, baked
  * once, and **not** freed by the base class's `app.destroy({ texture: false })`;
  * this class destroys it explicitly in {@link destroy} (it lives for the
- * chart's lifetime — not recreated per render). Skipping that is a real
- * per-instance GPU leak — covered by a test.
+ * chart's lifetime — not recreated per render or per update). Skipping that
+ * is a real per-instance GPU leak — covered by a test.
  *
  * For most use cases, prefer the declarative {@link render} entry point —
  * use this class directly only when you need fine-grained lifecycle control.
- *
- * @example
- * ```ts
- * import { ScatterChart } from 'pixi-charts';
- *
- * const chart = new ScatterChart({
- *   container: document.getElementById('chart')!,
- *   spec: {
- *     type: 'scatter',
- *     data: [
- *       { x: 1.2, y: 3.4, group: 'a' },
- *       { x: 2.7, y: 1.8, group: 'b' },
- *       { x: 4.1, y: 5.2, group: 'a' },
- *     ],
- *     encoding: {
- *       x: { field: 'x', type: 'quantitative' },
- *       y: { field: 'y', type: 'quantitative' },
- *       color: { field: 'group', type: 'categorical' },
- *     },
- *   },
- * });
- * await chart.init();
- * chart.destroy();
- * ```
  */
 export class ScatterChart extends Chart {
-  private readonly spec: ChartSpec;
+  private spec: ChartSpec;
 
   private records: ScatterRecord[] = [];
   private plotContainer: Container | null = null;
   /**
+   * Back-most child of {@link plotContainer}. Holds each axis's
+   * `gridContainer` so gridlines render behind the point cloud. Empty
+   * when neither axis has `showGrid: true`. See `Axis` docs for why
+   * gridlines and chrome live in separate containers.
+   *
+   * @internal
+   */
+  private gridLayer: Container | null = null;
+  /**
+   * Holds the axis chrome containers. A child of {@link plotContainer},
+   * sitting **below** {@link particles} in z-order so the axis line / ticks
+   * / labels never get visually punctured by stray particles overlapping
+   * the plot edge.
+   *
+   * @internal
+   */
+  private axesHolder: Container | null = null;
+  /**
    * The ParticleContainer and its shared texture **persist for the chart's
    * lifetime** — created on first render, transforms updated in place on
-   * resize, destroyed only in {@link destroy}. Destroying and recreating a
-   * ParticleContainer that PixiJS rendered on the previous frame crashes the
-   * GL particle pipe (it executes the now-freed buffer's instruction set);
-   * the prompt's resize guidance — "update positions in place, don't
-   * recreate the ParticleContainer" — exists for exactly this reason.
+   * resize and update, destroyed only in {@link destroy}. Destroying and
+   * recreating a ParticleContainer that PixiJS rendered on the previous
+   * frame crashes the GL particle pipe (it executes the now-freed buffer's
+   * instruction set); the prompt's resize guidance — "update positions in
+   * place, don't recreate the ParticleContainer" — exists for exactly this
+   * reason. The same invariant covers {@link Chart.update}.
    */
   private particles: ParticleContainer<Particle> | null = null;
   private pointTexture: Texture | null = null;
@@ -233,6 +232,9 @@ export class ScatterChart extends Chart {
   private tooltip: Tooltip | null = null;
   private interactionLayer: InteractionLayer<ScatterRecord> | null = null;
   private legend: Legend | null = null;
+  private currentLegendKind: 'continuous' | 'categorical' | null = null;
+  private lastTooltipContent: string | null = null;
+
   /**
    * Hover decoration — a single overlay {@link Sprite} sharing the particle
    * texture, drawn above the {@link ParticleContainer}. We use an overlay
@@ -241,11 +243,12 @@ export class ScatterChart extends Chart {
    * {@link syncParticles}); a per-frame scale animation on a particle would
    * force a full static-buffer re-upload every frame for the entire cloud.
    * The overlay is a regular Sprite with no upload cost, and it visually
-   * covers the small particle underneath when scaled up.
+   * covers the small particle underneath when scaled up. Created once in
+   * {@link ensureSetup} and reused across renders.
    */
   private hoverOverlay: Sprite | null = null;
   private hoverAnimationCancel: (() => void) | null = null;
-  /** First render done? Resize passes skip the fade-in. */
+  /** First render done? Resize / update passes skip the fade-in. */
   private didInitialRender = false;
 
   constructor(opts: ScatterChartOptions) {
@@ -271,8 +274,7 @@ export class ScatterChart extends Chart {
 
   /**
    * Destroy every owned primitive plus the shared particle texture, in
-   * addition to the base-class teardown. Idempotent — the base guards a
-   * second call and each primitive's own destroy is idempotent too.
+   * addition to the base-class teardown. Idempotent.
    */
   override destroy(): void {
     if (this.destroyed) return;
@@ -302,9 +304,6 @@ export class ScatterChart extends Chart {
     // The base class destroys the PIXI app with `texture: false`, so the
     // GPU-backed point texture would leak if we didn't free it ourselves.
     if (this.particles) {
-      // Detach before the base class's app.destroy({ children: true }) runs
-      // (if it's still parented it gets destroyed there anyway; this just
-      // makes ownership explicit and the reference release unambiguous).
       this.particles = null;
     }
     if (this.pointTexture) {
@@ -313,63 +312,94 @@ export class ScatterChart extends Chart {
     }
   }
 
-  /**
-   * Full render pass. Called by {@link init} for the first frame and by the
-   * base class's resize observer afterwards. Axes/legend/interaction are
-   * destroyed and rebuilt each pass (cheap); the ParticleContainer and its
-   * texture are **reused** and updated in place (see {@link syncParticles}).
-   * The spatial index and hit-tester are rebuilt from the new pixel-space
-   * records so hover stays correct after a resize.
-   */
-  protected override render(): void {
-    if (this.destroyed || this.app === null) return;
+  protected override replaceData(newData: readonly Record<string, unknown>[]): void {
+    this.spec = { ...this.spec, data: newData };
+  }
 
+  protected override onBeforeUpdate(): void {
+    this.tooltip?.hide();
+    this.lastTooltipContent = null;
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+    if (this.hoverOverlay !== null) {
+      this.hoverOverlay.alpha = 0;
+      this.hoverOverlay.scale.set(0);
+    }
+  }
+
+  protected override ensureSetup(): void {
+    if (this.app === null) return;
     const stage = this.app.stage;
 
-    // Cancel the previous pass's enter tween BEFORE tearing its targets down.
-    // A resize re-enters render() while the fade-in is still running; without
-    // this, the tween's next tick mutates a just-destroyed ParticleContainer
-    // and PixiJS crashes drawing a freed particle buffer. (The real-browser
-    // ResizeObserver fires an initial callback right after observe(), so this
-    // overlap is the common case, not an edge case — unit tests miss it
-    // because the mock ResizeObserver never auto-fires.)
-    this.cancelAllTweens();
-
-    // The hover overlay was a child of the old plotContainer (about to be
-    // destroyed). Drop our reference so the next hover starts fresh;
-    // cancelAllTweens() above has already invalidated any in-flight fade.
-    this.hoverOverlay = null;
-    this.hoverAnimationCancel = null;
-
-    if (this.plotContainer !== null) {
-      // Rescue the persistent ParticleContainer before destroying the plot —
-      // `{ children: true }` would otherwise free it (and crash a queued
-      // frame). It is reparented into the new plot in syncParticles().
-      if (this.particles !== null) this.plotContainer.removeChild(this.particles);
-      stage.removeChild(this.plotContainer);
-      this.plotContainer.destroy({ children: true });
-      this.plotContainer = null;
-    }
-    // NOTE: `this.particles` and `this.pointTexture` are intentionally NOT
-    // torn down here — they live for the chart's lifetime (see the field
-    // docs) and are freed only in destroy().
-    if (this.xAxis) {
-      this.xAxis.destroy();
-      this.xAxis = null;
-    }
-    if (this.yAxis) {
-      this.yAxis.destroy();
-      this.yAxis = null;
-    }
-    if (this.legend) {
-      this.legend.destroy();
-      this.legend = null;
+    if (this.plotContainer === null) {
+      this.plotContainer = new Container();
+      stage.addChild(this.plotContainer);
     }
 
+    // gridLayer first → axesHolder second → particles + hoverOverlay later
+    // in this method. The order is what guarantees gridlines and axis
+    // chrome stay behind the point cloud.
+    if (this.gridLayer === null) {
+      this.gridLayer = new Container();
+      this.plotContainer.addChild(this.gridLayer);
+    }
+    if (this.axesHolder === null) {
+      this.axesHolder = new Container();
+      this.plotContainer.addChild(this.axesHolder);
+    }
+
+    // Bake the shared point texture eagerly so dependents (particles,
+    // hoverOverlay) can be constructed in this same setup pass.
+    if (this.pointTexture === null) {
+      const g = new Graphics();
+      g.circle(TEXTURE_RADIUS, TEXTURE_RADIUS, TEXTURE_RADIUS).fill({ color: 0xffffff });
+      this.pointTexture = this.app.renderer.generateTexture(g);
+      g.destroy();
+    }
+
+    if (this.particles === null) {
+      // All-static dynamicProperties: nothing animates per-particle (the
+      // fade-in is a single container-level alpha). Static = fastest upload;
+      // update() re-syncs the buffer when we mutate transforms on
+      // resize / update().
+      this.particles = new ParticleContainer<Particle>({
+        texture: this.pointTexture,
+        dynamicProperties: { position: false, scale: false, rotation: false, color: false },
+      });
+      this.plotContainer.addChild(this.particles);
+    }
+
+    if (this.hoverOverlay === null) {
+      this.hoverOverlay = new Sprite(this.pointTexture);
+      this.hoverOverlay.anchor.set(0.5);
+      this.hoverOverlay.alpha = 0;
+      this.hoverOverlay.scale.set(0);
+      this.plotContainer.addChild(this.hoverOverlay);
+    }
+
+    if (this.tooltip === null && this.spec.options?.showTooltip !== false) {
+      this.tooltip = new Tooltip({ container: this.container });
+    }
+  }
+
+  protected override redrawData(_options?: UpdateOptions): void {
+    if (
+      this.app === null ||
+      this.plotContainer === null ||
+      this.axesHolder === null ||
+      this.gridLayer === null ||
+      this.particles === null
+    ) {
+      return;
+    }
+    void _options;
+
+    const stage = this.app.stage;
     const margin = resolveMargin(this.spec);
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
-
     const themeColors = resolveChartTheme(this.spec);
 
     // Build the color resolver + legend spec first — it doesn't depend on
@@ -378,14 +408,21 @@ export class ScatterChart extends Chart {
     // warning fires at most once per render.
     const { colorOf, legend: legendSpec } = this.buildColorResolver();
     const showLegend = this.spec.options?.showLegend !== false;
-    const legend =
-      showLegend && legendSpec !== null ? this.constructLegend(legendSpec, themeColors) : null;
+    const shouldShowLegend = showLegend && legendSpec !== null;
+
+    if (shouldShowLegend) {
+      this.syncLegend(legendSpec, themeColors, stage);
+    } else if (this.legend !== null) {
+      this.legend.destroy();
+      this.legend = null;
+      this.currentLegendKind = null;
+    }
 
     const layout = computeLayout({
       totalWidth: canvasW,
       totalHeight: canvasH,
       margin,
-      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+      legend: this.legend ? { width: this.legend.width, height: this.legend.height } : undefined,
     });
     const plotWidth = layout.plotRect.width;
     const plotHeight = layout.plotRect.height;
@@ -393,54 +430,90 @@ export class ScatterChart extends Chart {
     this.plotHeight = plotHeight;
 
     if (plotWidth <= 0 || plotHeight <= 0) {
-      legend?.destroy();
       return;
     }
 
     const setup = this.buildSetup(plotWidth, plotHeight, colorOf, themeColors);
     this.records = setup.records;
-    this.xAxis = setup.xAxis;
-    this.yAxis = setup.yAxis;
 
-    const plotContainer = new Container();
-    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
-    stage.addChild(plotContainer);
-    this.plotContainer = plotContainer;
+    this.plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
+    if (this.legend !== null && layout.legendRect !== null) {
+      this.legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+    }
 
-    plotContainer.addChild(this.yAxis.container);
+    // Axes: create on first redraw, update afterwards. Chrome attaches to
+    // axesHolder (behind particles); gridContainer attaches to gridLayer
+    // (also behind particles, behind chrome). Both containers share the
+    // same local origin — see Axis docs.
+    if (this.xAxis === null) {
+      this.xAxis = new Axis<AxisValue>(setup.xAxisOpts);
+      this.gridLayer.addChild(this.xAxis.gridContainer);
+      this.axesHolder.addChild(this.xAxis.container);
+    } else {
+      this.xAxis.update(setup.xAxisOpts);
+    }
     this.xAxis.container.position.set(0, plotHeight);
-    plotContainer.addChild(this.xAxis.container);
+    this.xAxis.gridContainer.position.set(0, plotHeight);
+
+    if (this.yAxis === null) {
+      this.yAxis = new Axis<AxisValue>(setup.yAxisOpts);
+      this.gridLayer.addChild(this.yAxis.gridContainer);
+      this.axesHolder.addChild(this.yAxis.container);
+    } else {
+      this.yAxis.update(setup.yAxisOpts);
+    }
 
     this.syncParticles();
 
-    // Hover overlay: a single Sprite over the persistent ParticleContainer,
-    // reusing the shared point texture. Sits above the particles so the
-    // hovered point's enlarged version is fully visible. Created after
-    // syncParticles() so the texture is guaranteed to exist.
-    if (this.pointTexture !== null) {
-      const overlay = new Sprite(this.pointTexture);
-      overlay.anchor.set(0.5);
-      overlay.alpha = 0;
-      overlay.scale.set(0);
-      plotContainer.addChild(overlay);
-      this.hoverOverlay = overlay;
-    }
-
     // Spatial index over the SAME pixel-space records used for drawing —
-    // built once here, reused for every pointer event (never per-frame).
+    // rebuilt every redraw, reused for every pointer event (never per-frame).
     this.spatialIndex = new SpatialIndex<ScatterRecord>(
       this.records.map<SpatialRecord<ScatterRecord>>((r) => ({ x: r.x, y: r.y, datum: r })),
     );
 
     this.setupInteractionAndTooltip(setup.maxRadius);
 
-    if (legend !== null && layout.legendRect !== null) {
-      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
-      stage.addChild(legend.container);
-      this.legend = legend;
-    }
-
     this.didInitialRender = true;
+  }
+
+  /**
+   * Create or update the {@link Legend} from a {@link LegendSpec}. The
+   * existing legend is reused when the kind matches (categorical → categorical
+   * or continuous → continuous); a kind change forces a destroy + recreate
+   * because the {@link Legend} constructor options are discriminated on
+   * `type` and not safely partial-updatable across that boundary.
+   *
+   * @internal
+   */
+  private syncLegend(
+    spec: NonNullable<LegendSpec>,
+    themeColors: ResolvedThemeColors,
+    stage: Container,
+  ): void {
+    if (this.legend !== null && this.currentLegendKind !== spec.kind) {
+      this.legend.destroy();
+      this.legend = null;
+      this.currentLegendKind = null;
+    }
+    if (this.legend === null) {
+      this.legend = this.constructLegend(spec, themeColors);
+      this.currentLegendKind = spec.kind;
+      stage.addChild(this.legend.container);
+    } else if (spec.kind === 'continuous') {
+      this.legend.update({
+        type: 'continuous',
+        scheme: spec.scheme,
+        domain: spec.domain,
+        labelColor: themeColors.legendText,
+      });
+    } else {
+      this.legend.update({
+        type: 'categorical',
+        orientation: 'vertical',
+        items: spec.items,
+        labelColor: themeColors.legendText,
+      });
+    }
   }
 
   /**
@@ -467,16 +540,17 @@ export class ScatterChart extends Chart {
 
   /**
    * Project `spec.data` into pixel-space {@link ScatterRecord}s and build
-   * the x/y scales, adapters, and {@link Axis} instances.
+   * the x/y scales, adapters, and the {@link AxisOptions} that configure
+   * the two axes. Returns options rather than constructed axes so the
+   * caller can create-on-first-render or update-on-subsequent-render
+   * without ever destroying the {@link Axis} primitive.
    *
    * Scatter's setup is **not** routed through `_shared/cartesian.ts`'s
-   * `buildCartesianSetup`: that helper groups rows into series by the colour
-   * field and sorts by x for path drawing — both meaningless for an
+   * `buildCartesianAxisPrep`: that helper groups rows into series by the
+   * colour field and sorts by x for path drawing — both meaningless for an
    * ungrouped point cloud whose colour is a per-point visual channel. Only
    * the genuinely shared leaf helpers (`resolveMargin/Width/Height`,
-   * `toNumber`, `toDate`) are reused. (Integration finding: the cartesian
-   * module is series-shaped; a v2 refactor could factor out a
-   * "two continuous axes, no grouping" helper if more such charts appear.)
+   * `toNumber`, `toDate`) are reused.
    *
    * @internal
    */
@@ -543,7 +617,7 @@ export class ScatterChart extends Chart {
       lineColor: themeColors.axis,
       gridColor: themeColors.grid,
     };
-    const xAxis = new Axis<AxisValue>({
+    const xAxisOpts: AxisOptions<AxisValue> = {
       scale: xAdapter,
       orientation: 'bottom',
       length: plotWidth,
@@ -551,8 +625,8 @@ export class ScatterChart extends Chart {
       showChrome,
       ...chromeColors,
       ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
-    });
-    const yAxis = new Axis<AxisValue>({
+    };
+    const yAxisOpts: AxisOptions<AxisValue> = {
       scale: yAdapter,
       orientation: 'left',
       length: plotHeight,
@@ -562,9 +636,9 @@ export class ScatterChart extends Chart {
       showChrome,
       ...chromeColors,
       ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
-    });
+    };
 
-    return { records, xAdapter, yAdapter, xAxis, yAxis, maxRadius };
+    return { records, xAdapter, yAdapter, xAxisOpts, yAxisOpts, maxRadius };
   }
 
   /**
@@ -673,14 +747,19 @@ export class ScatterChart extends Chart {
     const scheme =
       (color.scheme as CategoricalSchemeName | undefined) ?? DEFAULT_CATEGORICAL_SCHEME;
     const order: string[] = [];
-    const idx = new Map<string, number>();
+    const seen = new Set<string>();
     for (const row of this.spec.data) {
       const key = stringifyKey(row[color.field]);
-      if (!idx.has(key)) {
-        idx.set(key, order.length);
+      if (!seen.has(key)) {
+        seen.add(key);
         order.push(key);
       }
     }
+    // Sort alphabetically so the legend order and per-category color mapping
+    // are stable across update() calls regardless of incoming data order.
+    order.sort();
+    const idx = new Map<string, number>();
+    order.forEach((k, i) => idx.set(k, i));
     if (order.length > COLOR_GROUP_WARN_THRESHOLD) {
       console.warn(
         `pixi-charts: scatter color encoding on "${color.field}" produced ` +
@@ -703,52 +782,34 @@ export class ScatterChart extends Chart {
   }
 
   /**
-   * Create-or-reuse the shared white circle texture and the single
-   * {@link ParticleContainer}, reconcile its particles with the current
-   * records, and reparent it into the (freshly rebuilt) plot container.
+   * Reconcile the persistent {@link ParticleContainer}'s particles with
+   * the current {@link records}. The container and the shared point
+   * texture are NEVER destroyed here — they live for the chart's lifetime
+   * and are freed only in {@link destroy}. This invariant covers both
+   * resize (same point count, new pixel positions) and update (potentially
+   * different point count).
    *
-   * **Why reuse, not rebuild.** The texture and container are baked once and
-   * kept for the chart's lifetime. On resize, particle transforms are
-   * updated in place and `ParticleContainer.update()` re-uploads the static
-   * buffers — *not* a destroy/recreate, which would crash PixiJS's GL
-   * particle pipe when it executes a queued frame's instruction set against
-   * the freed buffer. Only a change in *point count* (not a resize) forces a
-   * particle rebuild; the container itself still survives.
+   * **Three paths.**
+   * - Particle count unchanged → mutate transforms in place, then call
+   *   `pc.update()` so PixiJS re-uploads the static buffer.
+   * - Particle count changed → `pc.removeParticles()` drains the old set,
+   *   then we `pc.addParticle(...)` once per new record. The container
+   *   itself still survives — only its children change.
    *
-   * **One white circle, per-particle `tint` + `scaleX/Y`** → one batched
-   * draw call for the whole cloud (PIXI v8 supports per-particle tint over a
-   * shared texture).
-   *
-   * Enter animation is a fade-in: one tween on the container's `alpha`
-   * 0 → 1 (one value per frame regardless of N — free at 1M points), only
-   * on the first render. Honors `spec.animation.enter` and reduced-motion
-   * via `tween()`; resize passes draw at full alpha.
+   * Enter animation is a single tween on the container's `alpha` 0 → 1
+   * (one value per frame regardless of N — free at 1M points), only on the
+   * first render. Honors `spec.animation.enter` and reduced-motion via
+   * `tween()`; resize / update passes draw at full alpha.
    *
    * @internal
    */
   private syncParticles(): void {
-    if (this.plotContainer === null || this.app === null) return;
-
-    if (this.pointTexture === null) {
-      const g = new Graphics();
-      g.circle(TEXTURE_RADIUS, TEXTURE_RADIUS, TEXTURE_RADIUS).fill({ color: 0xffffff });
-      this.pointTexture = this.app.renderer.generateTexture(g);
-      g.destroy();
-    }
-    const texture = this.pointTexture;
-
-    // All-static dynamicProperties: nothing animates per-particle (the
-    // fade-in is a single container-level alpha). Static = fastest upload;
-    // update() re-syncs the buffer when we mutate transforms on resize.
-    this.particles ??= new ParticleContainer<Particle>({
-      texture,
-      dynamicProperties: { position: false, scale: false, rotation: false, color: false },
-    });
+    if (this.particles === null || this.pointTexture === null || this.app === null) return;
     const pc = this.particles;
+    const texture = this.pointTexture;
     const existing = pc.particleChildren;
 
     if (existing.length !== this.records.length) {
-      // First render, or a point-count change: (re)build the particle set.
       if (existing.length > 0) pc.removeParticles();
       for (const r of this.records) {
         const s = r.radius / TEXTURE_RADIUS;
@@ -766,7 +827,6 @@ export class ScatterChart extends Chart {
         );
       }
     } else {
-      // Resize: same points, new pixel positions — mutate in place.
       for (let i = 0; i < existing.length; i += 1) {
         const p = existing[i];
         const r = this.records[i];
@@ -781,8 +841,6 @@ export class ScatterChart extends Chart {
       // Static props changed → PixiJS requires an explicit re-upload.
       pc.update();
     }
-
-    this.plotContainer.addChild(pc);
 
     const enter = this.spec.animation?.enter ?? true;
     const animate = enter !== false && !this.didInitialRender;
@@ -809,17 +867,9 @@ export class ScatterChart extends Chart {
     if (this.plotContainer === null || this.app === null) return;
 
     const showTooltip = this.spec.options?.showTooltip !== false;
-
-    if (this.interactionLayer) {
-      this.interactionLayer.destroy();
-      this.interactionLayer = null;
-    }
     if (this.tooltip && !showTooltip) {
       this.tooltip.destroy();
       this.tooltip = null;
-    }
-    if (showTooltip && this.tooltip === null) {
-      this.tooltip = new Tooltip({ container: this.container });
     }
 
     const hitRadius = Math.max(MIN_HIT_RADIUS, maxRadius);
@@ -827,38 +877,45 @@ export class ScatterChart extends Chart {
     const hitTester: HitTester<ScatterRecord> =
       index === null ? () => null : buildScatterHitTester(index, hitRadius);
 
-    let lastTooltipContent: string | null = null;
-    const handleEvent = (event: InteractionEvent<ScatterRecord>): void => {
-      if (event.type === 'hover') {
-        if (event.isNewDatum) {
-          this.applyHoverDecoration(event.datum);
-        }
-        if (this.tooltip !== null) {
-          if (event.isNewDatum || lastTooltipContent === null) {
-            lastTooltipContent = this.formatTooltip(event.datum);
-          }
-          const rect = this.container.getBoundingClientRect();
-          this.tooltip.show({
-            x: event.globalPosition.x - rect.left,
-            y: event.globalPosition.y - rect.top,
-            content: lastTooltipContent,
-          });
-        }
-      } else if (event.type === 'leave') {
-        this.clearHoverDecoration();
-        this.tooltip?.hide();
-        lastTooltipContent = null;
-      }
-      // click: no-op for v1 (wired so a future handler drops in cleanly).
-    };
+    if (this.interactionLayer === null) {
+      this.interactionLayer = new InteractionLayer<ScatterRecord>({
+        stage: this.plotContainer,
+        width: this.plotWidth,
+        height: this.plotHeight,
+        hitTest: hitTester,
+        onEvent: (event) => {
+          this.handleInteraction(event);
+        },
+      });
+    } else {
+      this.interactionLayer.setHitTester(hitTester);
+      this.interactionLayer.resize(this.plotWidth, this.plotHeight);
+    }
+  }
 
-    this.interactionLayer = new InteractionLayer<ScatterRecord>({
-      stage: this.plotContainer,
-      width: this.plotWidth,
-      height: this.plotHeight,
-      hitTest: hitTester,
-      onEvent: handleEvent,
-    });
+  /** @internal */
+  private handleInteraction(event: InteractionEvent<ScatterRecord>): void {
+    if (event.type === 'hover') {
+      if (event.isNewDatum) {
+        this.applyHoverDecoration(event.datum);
+      }
+      if (this.tooltip !== null) {
+        if (event.isNewDatum || this.lastTooltipContent === null) {
+          this.lastTooltipContent = this.formatTooltip(event.datum);
+        }
+        const rect = this.container.getBoundingClientRect();
+        this.tooltip.show({
+          x: event.globalPosition.x - rect.left,
+          y: event.globalPosition.y - rect.top,
+          content: this.lastTooltipContent,
+        });
+      }
+    } else if (event.type === 'leave') {
+      this.clearHoverDecoration();
+      this.tooltip?.hide();
+      this.lastTooltipContent = null;
+    }
+    // click: no-op for v1 (wired so a future handler drops in cleanly).
   }
 
   /** @internal */

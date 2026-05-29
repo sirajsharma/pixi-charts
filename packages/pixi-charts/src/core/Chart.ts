@@ -13,6 +13,23 @@ export interface ChartOptions {
 }
 
 /**
+ * Options accepted by {@link Chart.update}.
+ *
+ * - `animate: false` (default) — snap to the new data immediately. Correct
+ *   default for streaming and for `update()` callers that want the cheapest
+ *   path.
+ * - `animate: true` — tween from the previous state to the new state where
+ *   the chart can do so without diffing. Supported on **bar** and **pie**
+ *   when the category set is unchanged; ignored (snaps) on all other charts
+ *   and on bar/pie when categories change. Animated updates with changing
+ *   data shape genuinely need diffing — that's a deferred session.
+ */
+export interface UpdateOptions {
+  /** Tween from old to new where the chart supports it. Default `false`. */
+  animate?: boolean;
+}
+
+/**
  * Abstract base class for every chart in `pixi-charts`.
  *
  * Responsibilities of this class — and ONLY these:
@@ -26,10 +43,16 @@ export interface ChartOptions {
  *    can all be cancelled when the chart is destroyed.
  * 5. Clean up everything in {@link destroy}, idempotently, without
  *    requiring the user to know which steps initialised.
+ * 6. Orchestrate the **render / update / resize** flow as a single code
+ *    path: each enters via {@link render}, which cancels active tweens,
+ *    calls the subclass's {@link onBeforeUpdate} hook, runs lazy
+ *    {@link ensureSetup}, and then drives the subclass-specific
+ *    {@link redrawData}.
  *
- * Subclasses implement the abstract {@link render} method. Anything
- * chart-type-specific — axes, legend, tooltip, data marshalling — composes
- * out of small modules rather than extending this class further.
+ * Subclasses implement {@link redrawData} (and usually {@link replaceData},
+ * {@link onBeforeUpdate}, and {@link ensureSetup}). Anything chart-type-
+ * specific — axes, legend, tooltip, data marshalling — composes out of
+ * small modules rather than extending this class further.
  *
  * `Chart` is abstract — instantiate a concrete subclass (e.g.
  * {@link import('../charts/LineChart.js').LineChart}) or, in most cases,
@@ -41,10 +64,12 @@ export interface ChartOptions {
  * import { LineChart } from 'pixi-charts';
  *
  * const chart = new LineChart({ container, spec });
- * await chart.init();    // creates the PIXI app and does the first render
+ * await chart.init();           // creates the PIXI app and does the first render
  *
- * // ...later
- * chart.destroy();       // idempotent — safe to call more than once
+ * // ...later, swap data without recreating the WebGL context
+ * chart.update(newRows);
+ *
+ * chart.destroy();              // idempotent — safe to call more than once
  * ```
  */
 export abstract class Chart {
@@ -56,6 +81,16 @@ export abstract class Chart {
 
   private resizeObserver: ResizeObserver | null = null;
   private activeTweens: (() => void)[] = [];
+
+  /**
+   * Carries {@link UpdateOptions} from {@link update} into the next
+   * {@link render} pass so {@link redrawData} can read them. Cleared by
+   * `render()` before invoking the subclass — every redraw that wasn't
+   * triggered by `update()` (init, resize) sees `undefined`.
+   *
+   * @internal
+   */
+  private pendingUpdateOptions: UpdateOptions | undefined;
 
   private _initialized = false;
   private _destroyed = false;
@@ -114,11 +149,106 @@ export abstract class Chart {
   }
 
   /**
-   * Subclass-provided render routine. Called by the resize observer when the
-   * container dimensions change. Subclasses are also responsible for
-   * invoking it themselves after the chart has data to draw.
+   * Swap the chart's data without recreating the WebGL context. Reuses the
+   * existing PixiJS application, scales infrastructure, axes, legend, and
+   * interaction layer; recomputes scales, geometry, and hit-testing from
+   * the new data.
+   *
+   * `update()` cannot change the chart type, encoding, orientation, donut
+   * inner radius, or color scheme — only the rows in `data`. To change any
+   * of those, `destroy()` this chart and construct a fresh one.
+   *
+   * Synchronous. The PixiJS application is already initialised; updating
+   * is just recompute + redraw.
+   *
+   * @throws If called before {@link init} has resolved.
+   *
+   * If called after {@link destroy}, this is a silent no-op.
    */
-  protected abstract render(): void;
+  update(newData: readonly Record<string, unknown>[], options?: UpdateOptions): void {
+    if (this._destroyed) return;
+    if (!this._initialized || !this.app) {
+      throw new Error('Chart: update() called before init() resolved');
+    }
+    this.replaceData(newData);
+    this.pendingUpdateOptions = options;
+    this.render();
+  }
+
+  /**
+   * The single render code path. Called by:
+   *
+   * - {@link update} after the data has been swapped, with
+   *   {@link UpdateOptions} forwarded through {@link pendingUpdateOptions}.
+   * - The {@link ResizeObserver} callback when the container resizes.
+   * - The subclass's own `init()` after `super.init()` resolves, to draw
+   *   the first frame.
+   *
+   * Funnelling every redraw through one method keeps the
+   * `cancelAllTweens()` ordering, the destroyed/app guards, and the
+   * tooltip/hover-state cleanup in one place.
+   */
+  protected render(): void {
+    if (this._destroyed || !this.app) return;
+
+    this.cancelAllTweens();
+
+    const options = this.pendingUpdateOptions;
+    this.pendingUpdateOptions = undefined;
+
+    this.onBeforeUpdate();
+    this.ensureSetup();
+    this.redrawData(options);
+  }
+
+  /**
+   * Subclass hook for chart-specific data recompute + redraw.
+   *
+   * Called by {@link render} after `cancelAllTweens()`, `onBeforeUpdate()`,
+   * and `ensureSetup()`. Implementations should: rebuild any data-derived
+   * records, recompute scales, refresh axes / legend / interaction
+   * hit-tester via their `.update()` / `.setHitTester()` methods (do NOT
+   * destroy and recreate them — they persist across updates), and redraw
+   * geometry / sprites / textures.
+   *
+   * `options` is the {@link UpdateOptions} from the originating
+   * {@link update} call, or `undefined` for init / resize.
+   */
+  protected abstract redrawData(options?: UpdateOptions): void;
+
+  /**
+   * Subclass hook for swapping the data field on the stored spec.
+   *
+   * Called by {@link update} before {@link render}. Concrete charts store
+   * the {@link import('../spec/ChartSpec.js').ChartSpec} as a private
+   * field and use this hook to clone the spec with the new `data`. The
+   * data shape, encoding, and chart type are guaranteed by contract to
+   * remain compatible.
+   */
+  protected abstract replaceData(newData: readonly Record<string, unknown>[]): void;
+
+  /**
+   * Subclass hook that runs at the start of every {@link render} pass,
+   * before {@link ensureSetup} and {@link redrawData}. Default no-op.
+   *
+   * Charts override this to hide the tooltip and clear hover-related
+   * state (e.g. `hoveredRecord = null`, `hoverOverlay.alpha = 0`). The
+   * currently-hovered datum may not exist in the new data, so silently
+   * leaving the tooltip visible would point at the wrong place.
+   */
+  protected onBeforeUpdate(): void {
+    /* default no-op */
+  }
+
+  /**
+   * Subclass hook for one-time chrome creation that survives across
+   * updates and resizes (e.g. lazily instantiating the {@link Tooltip}
+   * DOM element). Called on every render but expected to be a no-op
+   * after the first invocation. Default no-op.
+   */
+  protected ensureSetup(): void {
+    /* default no-op */
+  }
 
   /**
    * Tracks a tween cancel function so it will be cancelled by

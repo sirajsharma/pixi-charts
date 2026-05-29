@@ -128,16 +128,21 @@ beforeEach(() => {
 });
 
 describe('Axis — construction with a linear scale', () => {
-  it('creates one Container and the expected child count', () => {
+  it('creates a chrome Container plus an (empty) grid Container, with the expected child count', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
     new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 200 });
 
-    expect(MockContainer.instances).toHaveLength(1);
-    const container = MockContainer.instances[0]!;
-    // axis line (1 Graphics) + N tick marks (Graphics) + N labels (Text).
+    // Two containers: chrome (index 0) + gridContainer (index 1).
+    expect(MockContainer.instances).toHaveLength(2);
+    const chrome = MockContainer.instances[0]!;
+    const grid = MockContainer.instances[1]!;
+    // axis line (1 Graphics) + N tick marks (Graphics) + N labels (Text)
+    // all live in the chrome container; the grid container is empty when
+    // showGrid is unset.
     const tickCount = MockText.instances.length;
     expect(tickCount).toBeGreaterThanOrEqual(3);
-    expect(container.children).toHaveLength(1 + tickCount * 2);
+    expect(chrome.children).toHaveLength(1 + tickCount * 2);
+    expect(grid.children).toHaveLength(0);
   });
 
   it('respects tickCount approximately (d3 picks nice numbers)', () => {
@@ -248,7 +253,7 @@ describe('Axis — orientations', () => {
 });
 
 describe('Axis — gridlines', () => {
-  it('adds N gridline Graphics when showGrid is true', () => {
+  it('adds N gridline Graphics into the gridContainer (separate from chrome) when showGrid is true', () => {
     const scale = scaleBand().domain(['a', 'b', 'c']).range([0, 300]);
     new Axis({
       scale: bandAdapter(scale),
@@ -259,11 +264,14 @@ describe('Axis — gridlines', () => {
       gridColor: 0xeeeeee,
     });
 
-    const container = MockContainer.instances[0]!;
-    // 3 gridlines + 1 axis line + 3 tick marks + 3 labels = 10 children.
-    expect(container.children).toHaveLength(10);
+    const chrome = MockContainer.instances[0]!;
+    const grid = MockContainer.instances[1]!;
+    // Gridlines live in the gridContainer (3), chrome holds the rest:
+    // 1 axis line + 3 tick marks + 3 labels = 7 chrome children.
+    expect(grid.children).toHaveLength(3);
+    expect(chrome.children).toHaveLength(7);
 
-    // First 3 children should be gridlines with the gridColor.
+    // The first 3 Graphics constructed are the gridlines (built before chrome).
     const firstThree = MockGraphics.instances.slice(0, 3);
     for (const g of firstThree) {
       expect(g.strokeCalls.some((s) => s.color === 0xeeeeee)).toBe(true);
@@ -274,9 +282,11 @@ describe('Axis — gridlines', () => {
     const scale = scaleBand().domain(['a', 'b', 'c']).range([0, 300]);
     new Axis({ scale: bandAdapter(scale), orientation: 'bottom', length: 300 });
 
-    const container = MockContainer.instances[0]!;
-    // 1 axis line + 3 tick marks + 3 labels = 7 children.
-    expect(container.children).toHaveLength(7);
+    const chrome = MockContainer.instances[0]!;
+    const grid = MockContainer.instances[1]!;
+    // 1 axis line + 3 tick marks + 3 labels = 7 chrome children; grid empty.
+    expect(chrome.children).toHaveLength(7);
+    expect(grid.children).toHaveLength(0);
   });
 
   it('throws if showGrid is true but gridLength is missing', () => {
@@ -312,21 +322,22 @@ describe('Axis — update()', () => {
     const newTexts = MockText.instances.slice(oldTexts.length);
     expect(newTexts.map((t) => t.text)).toEqual(['x', 'y', 'z', 'w']);
 
-    const container = MockContainer.instances[0]!;
-    // 1 axis line + 4 ticks + 4 labels = 9, plus 0 old children retained.
-    expect(container.children).toHaveLength(9);
+    const chrome = MockContainer.instances[0]!;
+    // 1 axis line + 4 ticks + 4 labels = 9 chrome children, plus 0 old children retained.
+    expect(chrome.children).toHaveLength(9);
 
     // Smoke: a different child count than before, so we know the rebuild happened.
-    expect(container.children.length).not.toBe(oldChildrenCount);
+    expect(chrome.children.length).not.toBe(oldChildrenCount);
   });
 });
 
 describe('Axis — destroy()', () => {
-  it('destroys all children and the container, marks destroyed', () => {
+  it('destroys all children and both containers, marks destroyed', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
     const axis = new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 200 });
 
-    const container = MockContainer.instances[0]!;
+    const chrome = MockContainer.instances[0]!;
+    const grid = MockContainer.instances[1]!;
     const allGraphics = [...MockGraphics.instances];
     const allTexts = [...MockText.instances];
 
@@ -334,20 +345,24 @@ describe('Axis — destroy()', () => {
 
     for (const g of allGraphics) expect(g.destroyed).toBe(true);
     for (const t of allTexts) expect(t.destroyed).toBe(true);
-    expect(container.destroy).toHaveBeenCalledTimes(1);
-    expect(container.destroy).toHaveBeenCalledWith(expect.objectContaining({ children: true }));
+    expect(chrome.destroy).toHaveBeenCalledTimes(1);
+    expect(chrome.destroy).toHaveBeenCalledWith(expect.objectContaining({ children: true }));
+    expect(grid.destroy).toHaveBeenCalledTimes(1);
+    expect(grid.destroy).toHaveBeenCalledWith(expect.objectContaining({ children: true }));
     expect(axis.destroyed).toBe(true);
   });
 
   it('is idempotent', () => {
     const scale = scaleLinear().domain([0, 100]).range([0, 200]);
     const axis = new Axis({ scale: linearAdapter(scale), orientation: 'bottom', length: 200 });
-    const container = MockContainer.instances[0]!;
+    const chrome = MockContainer.instances[0]!;
+    const grid = MockContainer.instances[1]!;
 
     axis.destroy();
     axis.destroy();
 
-    expect(container.destroy).toHaveBeenCalledTimes(1);
+    expect(chrome.destroy).toHaveBeenCalledTimes(1);
+    expect(grid.destroy).toHaveBeenCalledTimes(1);
   });
 
   it('throws when update() is called after destroy()', () => {
@@ -499,7 +514,7 @@ describe('Axis — title rendering', () => {
 });
 
 describe('Axis — chrome-less mode (showChrome: false)', () => {
-  it('renders only gridlines when showChrome is false and showGrid is true', () => {
+  it('renders only gridlines (into the gridContainer) when showChrome is false and showGrid is true', () => {
     const scale = scaleBand().domain(['a', 'b', 'c']).range([0, 300]);
     new Axis({
       scale: bandAdapter(scale),
@@ -513,6 +528,11 @@ describe('Axis — chrome-less mode (showChrome: false)', () => {
     // Three gridline Graphics, no axis line, no tick marks, no labels.
     expect(MockGraphics.instances).toHaveLength(3);
     expect(MockText.instances).toHaveLength(0);
+    // All three live in the gridContainer (index 1); chrome container is empty.
+    const chrome = MockContainer.instances[0]!;
+    const grid = MockContainer.instances[1]!;
+    expect(chrome.children).toHaveLength(0);
+    expect(grid.children).toHaveLength(3);
   });
 
   it('renders nothing when both showChrome and showGrid are false', () => {

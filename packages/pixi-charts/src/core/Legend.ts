@@ -41,6 +41,51 @@ const DEFAULT_GRADIENT_THICKNESS = 10;
  */
 const DEFAULT_TICK_FORMAT_SPECIFIER = '~g';
 
+/**
+ * Structural equality across two resolved {@link LegendOptions}. Used by
+ * {@link Legend.update} to short-circuit the destroy/rebuild when a caller
+ * passes the same data. Cheap — categorical legends carry ≤ ~12 items in
+ * practice, continuous legends carry a fixed handful of scalars.
+ */
+function legendOptionsEquivalent(a: LegendOptions, b: LegendOptions): boolean {
+  if (a.type !== b.type) return false;
+  if (a.type === 'categorical' && b.type === 'categorical') {
+    if (
+      a.orientation !== b.orientation ||
+      a.swatchSize !== b.swatchSize ||
+      a.spacing !== b.spacing ||
+      a.fontSize !== b.fontSize ||
+      a.fontFamily !== b.fontFamily ||
+      a.labelColor !== b.labelColor ||
+      a.items.length !== b.items.length
+    ) {
+      return false;
+    }
+    for (let i = 0; i < a.items.length; i += 1) {
+      const ai = a.items[i];
+      const bi = b.items[i];
+      if (ai === undefined || bi === undefined) return false;
+      if (ai.label !== bi.label || ai.color !== bi.color) return false;
+    }
+    return true;
+  }
+  if (a.type === 'continuous' && b.type === 'continuous') {
+    return (
+      a.scheme === b.scheme &&
+      a.domain[0] === b.domain[0] &&
+      a.domain[1] === b.domain[1] &&
+      a.length === b.length &&
+      a.thickness === b.thickness &&
+      a.orientation === b.orientation &&
+      a.tickFormat === b.tickFormat &&
+      a.fontSize === b.fontSize &&
+      a.fontFamily === b.fontFamily &&
+      a.labelColor === b.labelColor
+    );
+  }
+  return false;
+}
+
 /** One entry in a categorical legend: a label and the swatch color to draw next to it. */
 export interface CategoricalLegendItem {
   /** Human-readable label rendered next to the swatch. */
@@ -163,11 +208,18 @@ export class Legend {
     if (this._destroyed) {
       throw new Error('Legend: cannot update() after destroy()');
     }
-    if (opts.type !== undefined && opts.type !== this.options.type) {
-      this.options = opts as LegendOptions;
-    } else {
-      this.options = { ...this.options, ...opts } as LegendOptions;
+    const isModeSwitch = opts.type !== undefined && opts.type !== this.options.type;
+    const merged = isModeSwitch
+      ? (opts as LegendOptions)
+      : ({ ...this.options, ...opts } as LegendOptions);
+    // Skip the clear-and-rebuild when nothing visible changed. Consumers
+    // (charts) call update() unconditionally on every warm redraw; without
+    // this short-circuit, identical inputs still destroy and recreate every
+    // Graphics + Text child, causing visible flicker on streaming updates.
+    if (!isModeSwitch && legendOptionsEquivalent(this.options, merged)) {
+      return;
     }
+    this.options = merged;
     this.clearChildren();
     this.build();
   }

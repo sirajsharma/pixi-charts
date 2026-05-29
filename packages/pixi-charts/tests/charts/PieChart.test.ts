@@ -519,9 +519,12 @@ describe('PieChart — color resolution', () => {
 
     const g = sliceGfx();
     const colors = g.fillCalls.map((f) => f.color);
-    // Chrome & Edge → 'chromium' → same color. 3 distinct colors.
+    // Slices are sorted alphabetically by category for deterministic
+    // ordering across update() calls. Sorted order: Chrome, Edge, Firefox,
+    // Safari. Chrome & Edge both map to 'chromium' → adjacent same-color
+    // slices. 3 distinct colors.
     expect(new Set(colors).size).toBe(3);
-    expect(colors[0]).toBe(colors[3]);
+    expect(colors[0]).toBe(colors[1]);
     chart.destroy();
   });
 });

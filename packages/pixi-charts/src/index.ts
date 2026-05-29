@@ -24,7 +24,7 @@ export type {
 export type { Theme, ThemeColors } from './core/theme.js';
 
 // --- Imperative API (escape hatch for advanced consumers) ---
-export { Chart } from './core/Chart.js';
+export { Chart, type UpdateOptions } from './core/Chart.js';
 export { LineChart } from './charts/LineChart.js';
 export { AreaChart } from './charts/AreaChart.js';
 export { BarChart } from './charts/BarChart.js';

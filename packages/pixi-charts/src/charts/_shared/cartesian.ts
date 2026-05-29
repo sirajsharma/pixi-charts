@@ -3,7 +3,7 @@ import { format as d3format } from 'd3-format';
 import { scaleBand, scaleLinear, scaleTime } from 'd3-scale';
 import { timeFormat } from 'd3-time-format';
 
-import { Axis } from '../../core/Axis.js';
+import { Axis, type AxisOptions } from '../../core/Axis.js';
 import { getCategoricalColor, type CategoricalSchemeName } from '../../core/ColorScheme.js';
 import type { HitTester, Point } from '../../core/InteractionLayer.js';
 import { resolveTheme, type ResolvedThemeColors } from '../../core/theme.js';
@@ -187,6 +187,44 @@ export function buildCartesianScales(
   return { series, xAdapter, yAdapter, xAxis, yAxis, plotWidth, plotHeight };
 }
 
+/**
+ * Result of {@link buildCartesianAxisPrep}: scales + adapters + the
+ * {@link AxisOptions} a chart will pass into either `new Axis(...)`
+ * (first render) or `axis.update(...)` (subsequent renders). No PIXI
+ * primitives are constructed by this helper — that's the difference
+ * from {@link buildCartesianScales}, which returns ready-made
+ * {@link Axis} instances.
+ */
+export interface CartesianAxisPrep {
+  series: CartesianSeries[];
+  xAdapter: ScaleAdapter<XValue>;
+  yAdapter: ScaleAdapter<number>;
+  xAxisOpts: AxisOptions<XValue>;
+  yAxisOpts: AxisOptions<number>;
+  plotWidth: number;
+  plotHeight: number;
+}
+
+/**
+ * Build adapters and {@link AxisOptions} without constructing any
+ * {@link Axis} instances. Used by cartesian charts that own the axis
+ * lifecycle across init / update / resize — they create the axes once
+ * and pass these options into `axis.update(...)` on every subsequent
+ * render.
+ */
+export function buildCartesianAxisPrep(
+  spec: ChartSpec,
+  series: CartesianSeries[],
+  plotWidth: number,
+  plotHeight: number,
+  axisOpts: CartesianAxisOptions = {},
+): CartesianAxisPrep {
+  const xType = spec.encoding.x?.type ?? 'quantitative';
+  const { xAdapter, xAxisOpts } = buildXAxisOpts(series, xType, plotWidth, axisOpts);
+  const { yAdapter, yAxisOpts } = buildYAxisOpts(series, plotWidth, plotHeight, axisOpts);
+  return { series, xAdapter, yAdapter, xAxisOpts, yAxisOpts, plotWidth, plotHeight };
+}
+
 /** Convert raw spec data into typed, grouped, sorted, downsampled series. */
 function buildSeries(spec: ChartSpec): CartesianSeries[] {
   const xField = spec.encoding.x?.field ?? '';
@@ -237,7 +275,12 @@ function buildSeries(spec: ChartSpec): CartesianSeries[] {
     grouped.set('', spec.data.slice());
   }
 
-  const seriesNames = [...grouped.keys()];
+  // Sort alphabetically so the legend and color assignment are deterministic
+  // across updates — Map insertion order tracks first-appearance in the data,
+  // which can flip between regenerations of the same category set and cause
+  // visible legend flicker. With no color encoding the only key is the empty
+  // string, so sorting is a no-op.
+  const seriesNames = [...grouped.keys()].sort();
 
   if (colorField !== undefined && seriesNames.length > COLOR_GROUP_WARN_THRESHOLD) {
     console.warn(
@@ -300,13 +343,19 @@ function axisColorOpts(axisOpts: CartesianAxisOptions): {
   return { labelColor: c.label, lineColor: c.axis, gridColor: c.grid };
 }
 
-/** Build the x scale + adapter + {@link Axis} for the given field type. */
-function buildXAxis(
+/**
+ * Build the x scale + adapter and the {@link AxisOptions} that would
+ * configure the matching {@link Axis}. Pure — does not instantiate any
+ * PIXI primitives. Charts that manage their own axis lifecycle (create
+ * once, update on subsequent renders) call this directly; helpers that
+ * need a constructed axis layer on top.
+ */
+function buildXAxisOpts(
   series: readonly CartesianSeries[],
   xType: FieldType,
   plotWidth: number,
   axisOpts: CartesianAxisOptions,
-): { xAdapter: ScaleAdapter<XValue>; xAxis: Axis<XValue> } {
+): { xAdapter: ScaleAdapter<XValue>; xAxisOpts: AxisOptions<XValue> } {
   const showChrome = axisOpts.showAxes ?? true;
   const title = axisOpts.xTitle;
   const colorOpts = axisColorOpts(axisOpts);
@@ -318,7 +367,7 @@ function buildXAxis(
       .domain([a ?? new Date(0), b ?? new Date(1)])
       .range([0, plotWidth]);
     const adapter = timeAdapter(scale) as unknown as ScaleAdapter<XValue>;
-    const axis = new Axis<XValue>({
+    const opts: AxisOptions<XValue> = {
       scale: adapter,
       orientation: 'bottom',
       length: plotWidth,
@@ -326,8 +375,8 @@ function buildXAxis(
       showChrome,
       ...colorOpts,
       ...(title !== undefined ? { title } : {}),
-    });
-    return { xAdapter: adapter, xAxis: axis };
+    };
+    return { xAdapter: adapter, xAxisOpts: opts };
   }
   if (xType === 'categorical') {
     const domain: string[] = [];
@@ -343,15 +392,15 @@ function buildXAxis(
     }
     const scale = scaleBand().domain(domain).range([0, plotWidth]).padding(0);
     const adapter = bandAdapter(scale) as unknown as ScaleAdapter<XValue>;
-    const axis = new Axis<XValue>({
+    const opts: AxisOptions<XValue> = {
       scale: adapter,
       orientation: 'bottom',
       length: plotWidth,
       showChrome,
       ...colorOpts,
       ...(title !== undefined ? { title } : {}),
-    });
-    return { xAdapter: adapter, xAxis: axis };
+    };
+    return { xAdapter: adapter, xAxisOpts: opts };
   }
   // quantitative
   const xs = series.flatMap((s) => s.points.map((p) => p.xNum));
@@ -360,7 +409,7 @@ function buildXAxis(
     .domain([a ?? 0, b ?? 1])
     .range([0, plotWidth]);
   const adapter = linearAdapter(scale) as unknown as ScaleAdapter<XValue>;
-  const axis = new Axis<XValue>({
+  const opts: AxisOptions<XValue> = {
     scale: adapter,
     orientation: 'bottom',
     length: plotWidth,
@@ -368,8 +417,20 @@ function buildXAxis(
     showChrome,
     ...colorOpts,
     ...(title !== undefined ? { title } : {}),
-  });
-  return { xAdapter: adapter, xAxis: axis };
+  };
+  return { xAdapter: adapter, xAxisOpts: opts };
+}
+
+/** Construct the x axis. Thin wrapper that pairs {@link buildXAxisOpts}
+ * with `new Axis(...)` for callers that want a constructed primitive. */
+function buildXAxis(
+  series: readonly CartesianSeries[],
+  xType: FieldType,
+  plotWidth: number,
+  axisOpts: CartesianAxisOptions,
+): { xAdapter: ScaleAdapter<XValue>; xAxis: Axis<XValue> } {
+  const { xAdapter, xAxisOpts } = buildXAxisOpts(series, xType, plotWidth, axisOpts);
+  return { xAdapter, xAxis: new Axis<XValue>(xAxisOpts) };
 }
 
 /**
@@ -378,12 +439,12 @@ function buildXAxis(
  * what makes a zero baseline land correctly for area fills even when the
  * data doesn't include zero.
  */
-function buildYAxis(
+function buildYAxisOpts(
   series: readonly CartesianSeries[],
   plotWidth: number,
   plotHeight: number,
   axisOpts: CartesianAxisOptions,
-): { yAdapter: ScaleAdapter<number>; yAxis: Axis<number> } {
+): { yAdapter: ScaleAdapter<number>; yAxisOpts: AxisOptions<number> } {
   const ys = series.flatMap((s) => s.points.map((p) => p.y));
   const minY = d3min(ys) ?? 0;
   const maxY = d3max(ys) ?? 1;
@@ -394,7 +455,7 @@ function buildYAxis(
   const showGrid = axisOpts.showGrid ?? true;
   const title = axisOpts.yTitle;
   const colorOpts = axisColorOpts(axisOpts);
-  const axis = new Axis<number>({
+  const opts: AxisOptions<number> = {
     scale: adapter,
     orientation: 'left',
     length: plotHeight,
@@ -404,8 +465,18 @@ function buildYAxis(
     showChrome,
     ...colorOpts,
     ...(title !== undefined ? { title } : {}),
-  });
-  return { yAdapter: adapter, yAxis: axis };
+  };
+  return { yAdapter: adapter, yAxisOpts: opts };
+}
+
+function buildYAxis(
+  series: readonly CartesianSeries[],
+  plotWidth: number,
+  plotHeight: number,
+  axisOpts: CartesianAxisOptions,
+): { yAdapter: ScaleAdapter<number>; yAxis: Axis<number> } {
+  const { yAdapter, yAxisOpts } = buildYAxisOpts(series, plotWidth, plotHeight, axisOpts);
+  return { yAdapter, yAxis: new Axis<number>(yAxisOpts) };
 }
 
 /**

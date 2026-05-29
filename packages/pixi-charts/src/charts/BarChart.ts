@@ -3,8 +3,8 @@ import { format as d3format } from 'd3-format';
 import { scaleBand, scaleLinear } from 'd3-scale';
 import { Container, Graphics } from 'pixi.js';
 
-import { Axis } from '../core/Axis.js';
-import { Chart } from '../core/Chart.js';
+import { Axis, type AxisOptions } from '../core/Axis.js';
+import { Chart, type UpdateOptions } from '../core/Chart.js';
 import { getCategoricalColor, type CategoricalSchemeName } from '../core/ColorScheme.js';
 import {
   InteractionLayer,
@@ -86,16 +86,20 @@ interface ColorLegendItem {
   color: number;
 }
 
+/**
+ * Result of the data + scale transform — everything needed to drive a redraw
+ * without committing to constructing or updating the {@link Axis} primitives.
+ */
 interface BarSetup {
   records: BarRecord[];
   /** Band scale over the categories (x for vertical, y for horizontal). */
   bandAdapter: ScaleAdapter<string>;
   /** Linear scale over the values (y for vertical, x for horizontal). */
   valueAdapter: ScaleAdapter<number>;
-  /** Axis on the plot's bottom edge. */
-  xAxis: Axis<string> | Axis<number>;
-  /** Axis on the plot's left edge. */
-  yAxis: Axis<string> | Axis<number>;
+  /** Options for the bottom-edge axis. Caller decides create-vs-update. */
+  xAxisOpts: AxisOptions<string> | AxisOptions<number>;
+  /** Options for the left-edge axis. */
+  yAxisOpts: AxisOptions<string> | AxisOptions<number>;
   /** Categorical legend entries, or `null` when no legend should show. */
   legendItems: ColorLegendItem[] | null;
 }
@@ -126,17 +130,12 @@ export interface BarChartOptions {
  * {@link COLOR_GROUP_WARN_THRESHOLD} distinct color values a `console.warn`
  * fires (palettes wrap and colors repeat).
  *
- * **Lifecycle / resize** mirror {@link import('./LineChart.js').LineChart}:
- *
- * ```ts
- * const chart = new BarChart({ container, spec });
- * await chart.init();    // creates the PIXI app AND does the first render
- * chart.destroy();       // idempotent; cancels tweens, tears down primitives
- * ```
- *
- * Construction is pure. The first render runs at the tail of `init()`.
- * Resize rebuilds scales/axes and redraws at the final state (the enter
- * animation does not re-run).
+ * **Lifecycle / resize / update.** Construction is pure. The first render
+ * runs at the tail of `init()`. Resize and {@link Chart.update} both flow
+ * through the base class's render orchestrator, which reuses the persistent
+ * PIXI containers, axes, legend, interaction layer, and tooltip — only the
+ * data-dependent state (records, scale domains, axis ticks, bar geometry,
+ * hit-tester backing) is recomputed.
  *
  * **Baseline.** Bars grow from `valueAdapter.scale(0)` — zero projected
  * through the value scale, *not* an assumed plot edge. Negative values grow
@@ -144,69 +143,47 @@ export interface BarChartOptions {
  * still projects a correct (possibly off-plot) baseline. Same correctness
  * point {@link import('./AreaChart.js').AreaChart} established.
  *
- * The data + scale layer is **not** shared with the cartesian line-family
- * charts: bar's data transform is per-datum (not series-grouped) and its
- * drawing is discrete rectangles, not paths. Only the small
- * {@link formatCategoryValueTooltip} string helper is shared. Like every
- * chart, this extends {@link Chart} directly — composition, not a chart
- * inheritance tree.
- *
  * For most use cases, prefer the declarative {@link render} entry point —
  * use this class directly only when you need fine-grained lifecycle control.
- *
- * @example
- * ```ts
- * import { BarChart } from 'pixi-charts';
- *
- * const chart = new BarChart({
- *   container: document.getElementById('chart')!,
- *   spec: {
- *     type: 'bar',
- *     data: [
- *       { team: 'Alpha', wins: 12 },
- *       { team: 'Beta', wins: 9 },
- *       { team: 'Gamma', wins: 15 },
- *     ],
- *     encoding: {
- *       x: { field: 'team', type: 'categorical' },
- *       y: { field: 'wins', type: 'quantitative' },
- *     },
- *     options: { orientation: 'vertical' },
- *   },
- * });
- * await chart.init();
- * chart.destroy();
- * ```
  */
 export class BarChart extends Chart {
-  private readonly spec: ChartSpec;
+  private spec: ChartSpec;
   private readonly orientation: Orientation;
 
   private records: BarRecord[] = [];
+  /**
+   * Per-bar value currently being drawn. Parallel to {@link records}. The
+   * enter animation interpolates these from `0` up to each record's
+   * `value`; an animated `update()` interpolates from the previous values
+   * to the new ones. The `redrawBars` path reads only this array, which
+   * keeps both animations a single drawing loop.
+   *
+   * @internal
+   */
+  private displayValues: number[] = [];
+
   private plotContainer: Container | null = null;
+  /**
+   * Back-most layer inside {@link plotContainer}. Holds each axis's
+   * `gridContainer`, added BEFORE {@link barsContainer} so gridlines render
+   * behind bars instead of cutting through them. The layer is empty when
+   * neither axis has `showGrid: true`.
+   */
+  private gridLayer: Container | null = null;
   private barsContainer: Container | null = null;
+  private barsGraphics: Graphics | null = null;
+
   private xAxis: Axis<string> | Axis<number> | null = null;
   private yAxis: Axis<string> | Axis<number> | null = null;
-  private bandAdapter: ScaleAdapter<string> | null = null;
-  private valueAdapter: ScaleAdapter<number> | null = null;
+  private bandAdapterRef: ScaleAdapter<string> | null = null;
+  private valueAdapterRef: ScaleAdapter<number> | null = null;
   private plotWidth = 0;
   private plotHeight = 0;
   private tooltip: Tooltip | null = null;
   private interactionLayer: InteractionLayer<BarRecord> | null = null;
   private legend: Legend | null = null;
-  /**
-   * The single {@link Graphics} that draws every bar. Hoisted to a class
-   * field so the hover-tween redraw can reach it from
-   * {@link redrawBars} without re-running {@link drawBars}.
-   */
-  private barsGraphics: Graphics | null = null;
-  /**
-   * Current enter-animation progress (0 = collapsed onto baseline, 1 = full
-   * extent). Held as a field so the hover redraw can paint bars at the same
-   * extent the enter tween is targeting — if a hover happens during enter,
-   * bars don't snap to full extent.
-   */
-  private enterProgress = 0;
+  private lastTooltipContent: string | null = null;
+
   /**
    * The bar currently under the pointer. Reference identity (the same
    * {@link BarRecord} instance held in {@link records}) is the cancel-key
@@ -273,48 +250,52 @@ export class BarChart extends Chart {
     }
   }
 
-  /**
-   * Full render pass. Called by {@link init} for the first frame and by the
-   * base class's resize observer afterwards. Existing primitives are
-   * destroyed and rebuilt each pass (same simple shape as Line/Area).
-   */
-  protected override render(): void {
-    if (this.destroyed || this.app === null) return;
+  protected override replaceData(newData: readonly Record<string, unknown>[]): void {
+    this.spec = { ...this.spec, data: newData };
+  }
 
-    const stage = this.app.stage;
-
-    // Cancel the prior pass's enter tween before tearing down its targets.
-    // The real-browser ResizeObserver fires immediately on observe(), so a
-    // resize re-enters render() mid enter-animation; without this the tween's
-    // next tick draws into a just-destroyed Graphics and crashes. (Unit tests
-    // miss it — the mock ResizeObserver never auto-fires during a live tween.)
-    this.cancelAllTweens();
-
-    // Hover state references objects in the about-to-be-destroyed
-    // plotContainer; drop them so the next hover starts clean.
-    this.barsGraphics = null;
-    this.enterProgress = 0;
+  protected override onBeforeUpdate(): void {
+    this.tooltip?.hide();
+    this.lastTooltipContent = null;
     this.hoveredRecord = null;
     this.hoverProgress = 0;
-    this.hoverAnimationCancel = null;
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+  }
 
-    if (this.plotContainer !== null) {
-      stage.removeChild(this.plotContainer);
-      this.plotContainer.destroy({ children: true });
-      this.plotContainer = null;
+  protected override ensureSetup(): void {
+    if (this.app === null) return;
+    const stage = this.app.stage;
+
+    if (this.plotContainer === null) {
+      this.plotContainer = new Container();
+      stage.addChild(this.plotContainer);
     }
-    if (this.xAxis) {
-      this.xAxis.destroy();
-      this.xAxis = null;
+    // gridLayer added BEFORE barsContainer so gridlines render behind bars.
+    if (this.gridLayer === null) {
+      this.gridLayer = new Container();
+      this.plotContainer.addChild(this.gridLayer);
     }
-    if (this.yAxis) {
-      this.yAxis.destroy();
-      this.yAxis = null;
+    if (this.barsContainer === null) {
+      this.barsContainer = new Container();
+      this.plotContainer.addChild(this.barsContainer);
     }
-    if (this.legend) {
-      this.legend.destroy();
-      this.legend = null;
+    if (this.barsGraphics === null) {
+      this.barsGraphics = new Graphics();
+      this.barsContainer.addChild(this.barsGraphics);
     }
+    if (this.tooltip === null && this.spec.options?.showTooltip !== false) {
+      this.tooltip = new Tooltip({ container: this.container });
+    }
+  }
+
+  protected override redrawData(options?: UpdateOptions): void {
+    if (this.app === null || this.plotContainer === null) return;
+
+    const stage = this.app.stage;
+    const wantAnimate = options?.animate === true;
 
     const margin = resolveMargin(this.spec);
     const canvasW = this.app.screen.width;
@@ -323,25 +304,40 @@ export class BarChart extends Chart {
     const themeColors = resolveChartTheme(this.spec);
 
     // Legend items are derived from the color encoding alone — independent of
-    // plot pixel dimensions — so we can size the legend before computing the
-    // final plot rect (which the legend's width feeds into).
+    // plot pixel dimensions — so we can size the legend before committing to
+    // the final plot rect (which the legend's width feeds into).
     const legendItems = this.computeLegendItems();
     const showLegend = this.spec.options?.showLegend !== false;
-    const legend =
-      showLegend && legendItems !== null && legendItems.length > 0
-        ? new Legend({
-            type: 'categorical',
-            orientation: 'vertical',
-            items: legendItems,
-            labelColor: themeColors.legendText,
-          })
-        : null;
+    const shouldShowLegend = showLegend && legendItems !== null && legendItems.length > 0;
+
+    // Manage the Legend lifecycle BEFORE layout so its measured size feeds
+    // the plot-rect calculation. The legend is recreated only when its
+    // existence flips — otherwise it's updated in place.
+    if (shouldShowLegend) {
+      if (this.legend === null) {
+        this.legend = new Legend({
+          type: 'categorical',
+          orientation: 'vertical',
+          items: legendItems,
+          labelColor: themeColors.legendText,
+        });
+        stage.addChild(this.legend.container);
+      } else {
+        this.legend.update({
+          type: 'categorical',
+          orientation: 'vertical',
+          items: legendItems,
+          labelColor: themeColors.legendText,
+        });
+      }
+    } else if (this.legend !== null) {
+      this.legend.destroy();
+      this.legend = null;
+    }
 
     // Pre-measure the band-axis labels so the relevant margin grows to fit
-    // long category names (capped at MAX_BAND_MARGIN_FRACTION of the canvas
-    // dimension). For horizontal bars this is the left margin (label width);
-    // for vertical bars the bottom margin (label height — usually a no-op
-    // at default font size but defended against larger fonts).
+    // long category names (capped at the cross-axis cap inside
+    // measureBandAxisMargin).
     const categories = this.extractCategories();
     const labelStyle = { fontFamily: 'sans-serif', fontSize: 11 };
     const bandMargin =
@@ -358,7 +354,7 @@ export class BarChart extends Chart {
       totalWidth: canvasW,
       totalHeight: canvasH,
       margin,
-      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+      legend: this.legend ? { width: this.legend.width, height: this.legend.height } : undefined,
     });
     const plotWidth = layout.plotRect.width;
     const plotHeight = layout.plotRect.height;
@@ -366,37 +362,82 @@ export class BarChart extends Chart {
     this.plotHeight = plotHeight;
 
     if (plotWidth <= 0 || plotHeight <= 0) {
-      legend?.destroy();
       return;
     }
 
     const setup = this.buildSetup(plotWidth, plotHeight, themeColors, bandMargin.truncated);
+
+    // Capture previous values BEFORE replacing records so we can animate
+    // from the old state into the new. Only valid when categories are
+    // elementwise identical; otherwise we silently snap (matches the
+    // documented `animate: true` fallback).
+    const prevRecords = this.records;
+    const categoriesIdentical =
+      prevRecords.length === setup.records.length &&
+      prevRecords.every((r, i) => r.category === setup.records[i]?.category);
+    const prevValues = categoriesIdentical ? prevRecords.map((r) => r.value) : null;
+
     this.records = setup.records;
-    this.bandAdapter = setup.bandAdapter;
-    this.valueAdapter = setup.valueAdapter;
-    this.xAxis = setup.xAxis;
-    this.yAxis = setup.yAxis;
+    this.bandAdapterRef = setup.bandAdapter;
+    this.valueAdapterRef = setup.valueAdapter;
 
-    const plotContainer = new Container();
-    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
-    stage.addChild(plotContainer);
-    this.plotContainer = plotContainer;
+    // Position the plot container per the layout. Always — the legend's
+    // measured size may have shifted on resize or after data change.
+    this.plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
 
-    plotContainer.addChild(this.yAxis.container);
+    // Axes: create on first redraw, update afterwards. The orientation is
+    // class-fixed by the spec, so the generic of each Axis is also fixed.
+    // Each axis's gridContainer is added to gridLayer (behind data), while
+    // its chrome container is added to plotContainer (in front of data so
+    // labels stay legible).
+    const gridLayer = this.gridLayer;
+    if (gridLayer === null) return;
+    if (this.xAxis === null) {
+      this.xAxis = createBarAxis(setup.xAxisOpts);
+      gridLayer.addChild(this.xAxis.gridContainer);
+      this.plotContainer.addChild(this.xAxis.container);
+    } else {
+      updateBarAxis(this.xAxis, setup.xAxisOpts);
+    }
+    if (this.yAxis === null) {
+      this.yAxis = createBarAxis(setup.yAxisOpts);
+      gridLayer.addChild(this.yAxis.gridContainer);
+      this.plotContainer.addChild(this.yAxis.container);
+    } else {
+      updateBarAxis(this.yAxis, setup.yAxisOpts);
+    }
+    // x-axis sits on the bottom edge of the plot — chrome AND gridContainer
+    // share the same local origin (gridContainer extents are local deltas).
     this.xAxis.container.position.set(0, plotHeight);
-    plotContainer.addChild(this.xAxis.container);
+    this.xAxis.gridContainer.position.set(0, plotHeight);
+    // y-axis chrome and grid sit at (0, 0); no explicit set required.
 
-    const barsContainer = new Container();
-    plotContainer.addChild(barsContainer);
-    this.barsContainer = barsContainer;
+    if (this.legend !== null && layout.legendRect !== null) {
+      this.legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+    }
 
-    this.drawBars();
+    // Interaction layer: create on first redraw, refresh hit-tester +
+    // resize afterwards.
     this.setupInteractionAndTooltip();
 
-    if (legend !== null && layout.legendRect !== null) {
-      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
-      stage.addChild(legend.container);
-      this.legend = legend;
+    // Drive bar drawing. Three modes:
+    //   - First render with enter-animation enabled → tween 0 → value.
+    //   - update() with animate: true and identical categories → tween
+    //     prevValue → newValue.
+    //   - Anything else (first render with animation off, resize, update
+    //     without animation, update with changed categories) → snap.
+    const enter = this.spec.animation?.enter ?? true;
+    const isFirstRender = !this.didInitialRender;
+    const wantEnterAnim = isFirstRender && enter !== false;
+    const wantUpdateAnim = !isFirstRender && wantAnimate && prevValues !== null;
+
+    if (wantEnterAnim) {
+      this.runEnterAnimation(typeof enter === 'object' ? enter : {});
+    } else if (wantUpdateAnim) {
+      this.runUpdateAnimation(prevValues);
+    } else {
+      this.displayValues = this.records.map((r) => r.value);
+      this.redrawBars();
     }
 
     this.didInitialRender = true;
@@ -460,9 +501,10 @@ export class BarChart extends Chart {
 
   /**
    * Transform `spec.data` into {@link BarRecord}s and build the band/value
-   * scales, adapters, and the two {@link Axis} instances. Records preserve
-   * input order — the consumer controls bar order via their data array; we
-   * never sort.
+   * scales + adapters, returning the {@link AxisOptions} that the caller
+   * uses to create or update the two {@link Axis} instances. Records
+   * preserve input order — the consumer controls bar order via their data
+   * array; we never sort.
    *
    * @internal
    */
@@ -486,13 +528,20 @@ export class BarChart extends Chart {
     const colorValues: string[] = [];
     const colorIndex = new Map<string, number>();
     if (colorField !== undefined) {
+      const seen = new Set<string>();
       for (const row of this.spec.data) {
         const key = stringifyKey(row[colorField]);
-        if (!colorIndex.has(key)) {
-          colorIndex.set(key, colorValues.length);
+        if (!seen.has(key)) {
+          seen.add(key);
           colorValues.push(key);
         }
       }
+      // Sort alphabetically so legend order and color-to-value mapping are
+      // stable across update() calls regardless of incoming data order. The
+      // colorIndex is built after sorting so palette indices follow the
+      // sorted order.
+      colorValues.sort();
+      colorValues.forEach((v, i) => colorIndex.set(v, i));
       if (colorValues.length > COLOR_GROUP_WARN_THRESHOLD) {
         console.warn(
           `pixi-charts: bar color encoding on "${colorField}" produced ` +
@@ -535,8 +584,8 @@ export class BarChart extends Chart {
 
     let bAdapter: ScaleAdapter<string>;
     let vAdapter: ScaleAdapter<number>;
-    let xAxis: Axis<string> | Axis<number>;
-    let yAxis: Axis<string> | Axis<number>;
+    let xAxisOpts: AxisOptions<string> | AxisOptions<number>;
+    let yAxisOpts: AxisOptions<string> | AxisOptions<number>;
 
     const showChrome = this.spec.options?.showAxes ?? true;
     const showGrid = this.spec.options?.showGrid ?? true;
@@ -563,18 +612,18 @@ export class BarChart extends Chart {
       bAdapter = bandAdapter(bandScale);
       vAdapter = linearAdapter(valueScale);
       // x = value (bottom), y = category band (left).
-      xAxis = new Axis<number>({
+      xAxisOpts = {
         scale: vAdapter,
         orientation: 'bottom',
         length: plotWidth,
-        tickFormat: (v) => d3format('~s')(v),
+        tickFormat: (v: number) => d3format('~s')(v),
         showGrid,
         gridLength: plotHeight,
         showChrome,
         ...chromeColors,
         ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
-      });
-      yAxis = new Axis<string>({
+      };
+      yAxisOpts = {
         scale: bAdapter,
         orientation: 'left',
         length: plotHeight,
@@ -582,14 +631,14 @@ export class BarChart extends Chart {
         ...chromeColors,
         ...(bandTickFormat !== undefined ? { tickFormat: bandTickFormat } : {}),
         ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
-      });
+      };
     } else {
       bandScale.range([0, plotWidth]);
       valueScale.range([plotHeight, 0]);
       bAdapter = bandAdapter(bandScale);
       vAdapter = linearAdapter(valueScale);
       // x = category band (bottom), y = value (left).
-      xAxis = new Axis<string>({
+      xAxisOpts = {
         scale: bAdapter,
         orientation: 'bottom',
         length: plotWidth,
@@ -597,18 +646,18 @@ export class BarChart extends Chart {
         ...chromeColors,
         ...(bandTickFormat !== undefined ? { tickFormat: bandTickFormat } : {}),
         ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
-      });
-      yAxis = new Axis<number>({
+      };
+      yAxisOpts = {
         scale: vAdapter,
         orientation: 'left',
         length: plotHeight,
-        tickFormat: (v) => d3format('~s')(v),
+        tickFormat: (v: number) => d3format('~s')(v),
         showGrid,
         gridLength: plotWidth,
         showChrome,
         ...chromeColors,
         ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
-      });
+      };
     }
 
     // Legend only when a categorical color encoding actually distinguishes
@@ -622,15 +671,23 @@ export class BarChart extends Chart {
       }));
     }
 
-    return { records, bandAdapter: bAdapter, valueAdapter: vAdapter, xAxis, yAxis, legendItems };
+    return {
+      records,
+      bandAdapter: bAdapter,
+      valueAdapter: vAdapter,
+      xAxisOpts,
+      yAxisOpts,
+      legendItems,
+    };
   }
 
   /**
-   * Compute a bar's pixel rectangle at animation `progress` (0 → collapsed
-   * onto the baseline, 1 → full extent). Because the value scale is linear
-   * and the baseline is `scale(0)`, `scale(value * progress)` interpolates
-   * the bar edge from the baseline to its final position — correct for
-   * positive and negative values alike.
+   * Compute a bar's pixel rectangle for a given `displayValue` — the
+   * currently-drawn value (animated state, not necessarily the record's
+   * final value). With a linear value scale and baseline at
+   * `valueAdapter.scale(0)`, plugging in the interpolated value yields the
+   * bar edge at every animation frame — correct for positive and negative
+   * values alike.
    *
    * @internal
    */
@@ -639,11 +696,11 @@ export class BarChart extends Chart {
     bandAdapter: ScaleAdapter<string>,
     valueAdapter: ScaleAdapter<number>,
     baseline: number,
-    progress: number,
+    displayValue: number,
   ): { x: number; y: number; width: number; height: number } {
     const bandPos = bandAdapter.scale(record.category);
     const bandSize = bandAdapter.bandwidth?.() ?? 0;
-    const valuePx = valueAdapter.scale(record.value * progress);
+    const valuePx = valueAdapter.scale(displayValue);
     const lo = Math.min(valuePx, baseline);
     const extent = Math.abs(valuePx - baseline);
     if (this.orientation === 'horizontal') {
@@ -653,36 +710,24 @@ export class BarChart extends Chart {
   }
 
   /**
-   * Draw every bar into a single {@link Graphics} (one object, one draw
-   * pass — not one Graphics per bar). The enter animation tweens a single
-   * `progress` 0 → 1, clearing and redrawing all bars each frame so they
-   * grow from the baseline together. Honors `spec.animation.enter`
-   * (`false` → final state immediately; object → `duration` / `ease`
-   * through to `tween()`), and reduced-motion via `tween()`. Resize passes
-   * draw the final state immediately.
+   * Run the first-frame enter animation: tween a single 0 → 1 progress with
+   * `displayValues[i] = records[i].value * progress`. Honors
+   * `spec.animation.enter` (`object` → `duration` / `ease`), and
+   * reduced-motion via `tween()`.
    *
    * @internal
    */
-  private drawBars(): void {
-    if (this.barsContainer === null) return;
-
-    const graphics = new Graphics();
-    this.barsContainer.addChild(graphics);
-    this.barsGraphics = graphics;
-
-    const enter = this.spec.animation?.enter ?? true;
-    const animate = enter !== false && !this.didInitialRender;
-    const enterOptions = typeof enter === 'object' ? enter : {};
-
-    if (!animate || this.app === null) {
-      this.enterProgress = 1;
-      this.redrawBars();
-      return;
-    }
-
+  private runEnterAnimation(enterOptions: {
+    duration?: number;
+    ease?: import('../core/animation.js').EasingName;
+  }): void {
+    if (this.app === null) return;
+    const targets = this.records.map((r) => r.value);
+    this.displayValues = this.records.map(() => 0);
+    this.redrawBars();
     const tweenOpts: Parameters<typeof tween>[1] = {
       onUpdate: (p) => {
-        this.enterProgress = p;
+        this.displayValues = targets.map((v) => v * p);
         this.redrawBars();
       },
     };
@@ -693,27 +738,54 @@ export class BarChart extends Chart {
   }
 
   /**
+   * Run an animated update: tween from the previous values into the new
+   * record values. Called only when categories are elementwise identical
+   * to the previous render — otherwise the orchestrator snaps.
+   *
+   * @internal
+   */
+  private runUpdateAnimation(prevValues: number[]): void {
+    if (this.app === null) return;
+    const targets = this.records.map((r) => r.value);
+    this.displayValues = prevValues.slice();
+    this.redrawBars();
+    const cancel = tween(this.app.ticker, {
+      onUpdate: (p) => {
+        this.displayValues = targets.map((target, i) => {
+          const prev = prevValues[i] ?? 0;
+          return prev + (target - prev) * p;
+        });
+        this.redrawBars();
+      },
+    });
+    this.addTween(cancel);
+  }
+
+  /**
    * Clear and redraw every bar into {@link barsGraphics} using the current
-   * {@link enterProgress} and hover state ({@link hoveredRecord} +
-   * {@link hoverProgress}). Called on every frame of both the enter tween
-   * and the hover tween — typical bar counts (5–50) keep this cheap.
+   * {@link displayValues} and hover state ({@link hoveredRecord} +
+   * {@link hoverProgress}). Called on every frame of the enter / update
+   * tween and on every hover redraw — typical bar counts (5–50) keep this
+   * cheap.
    *
    * @internal
    */
   private redrawBars(): void {
     const graphics = this.barsGraphics;
-    const bandAdapter = this.bandAdapter;
-    const valueAdapter = this.valueAdapter;
+    const bandAdapter = this.bandAdapterRef;
+    const valueAdapter = this.valueAdapterRef;
     if (graphics === null || bandAdapter === null || valueAdapter === null) return;
 
     const baseline = valueAdapter.scale(0);
     const hovered = this.hoveredRecord;
     const lighten = this.hoverProgress * HOVER_LIGHTEN_AMOUNT;
-    const enterProgress = this.enterProgress;
 
     graphics.clear();
-    for (const record of this.records) {
-      const r = this.barRect(record, bandAdapter, valueAdapter, baseline, enterProgress);
+    for (let i = 0; i < this.records.length; i += 1) {
+      const record = this.records[i];
+      if (record === undefined) continue;
+      const displayValue = this.displayValues[i] ?? record.value;
+      const r = this.barRect(record, bandAdapter, valueAdapter, baseline, displayValue);
       const fill = record === hovered ? lightenColor(record.color, lighten) : record.color;
       graphics.rect(r.x, r.y, r.width, r.height).fill({ color: fill, alpha: 1 });
     }
@@ -726,73 +798,76 @@ export class BarChart extends Chart {
    * then accept it only if the pointer is also between the baseline and the
    * bar's value edge along the value axis.
    *
-   * **Tie-break.** At the exact boundary between two bands the first band in
-   * domain (input) order that contains the pointer wins; within a band the
-   * first record for that category wins. Deterministic, and which side of a
-   * one-pixel seam is irrelevant in practice.
-   *
    * @internal
    */
   private buildHitTester(): HitTester<BarRecord> {
-    const bandAdapter = this.bandAdapter;
-    const valueAdapter = this.valueAdapter;
+    const bandAdapter = this.bandAdapterRef;
+    const valueAdapter = this.valueAdapterRef;
     if (bandAdapter === null || valueAdapter === null) return () => null;
     return buildBarHitTester(this.records, this.orientation, bandAdapter, valueAdapter);
   }
 
-  /** @internal */
+  /**
+   * Create the {@link InteractionLayer} on the first call; on subsequent
+   * calls, swap the hit-tester and resize. The sprite is added to
+   * {@link plotContainer} once and persists across updates.
+   *
+   * @internal
+   */
   private setupInteractionAndTooltip(): void {
     if (this.plotContainer === null || this.app === null) return;
 
     const showTooltip = this.spec.options?.showTooltip !== false;
-
-    if (this.interactionLayer) {
-      this.interactionLayer.destroy();
-      this.interactionLayer = null;
-    }
     if (this.tooltip && !showTooltip) {
       this.tooltip.destroy();
       this.tooltip = null;
     }
-    if (showTooltip && this.tooltip === null) {
-      this.tooltip = new Tooltip({ container: this.container });
-    }
+    // ensureSetup() created the tooltip on the first render when
+    // showTooltip was true — no further creation here.
 
     const hitTester = this.buildHitTester();
-    let lastTooltipContent: string | null = null;
-    const handleEvent = (event: InteractionEvent<BarRecord>): void => {
-      if (event.type === 'hover') {
-        if (event.isNewDatum) {
-          this.applyHoverDecoration(event.datum);
-        }
-        if (this.tooltip !== null) {
-          if (event.isNewDatum || lastTooltipContent === null) {
-            lastTooltipContent = this.formatTooltip(event.datum);
-          }
-          const rect = this.container.getBoundingClientRect();
-          const localX = event.globalPosition.x - rect.left;
-          const localY = event.globalPosition.y - rect.top;
-          this.tooltip.show({
-            x: localX,
-            y: localY,
-            content: lastTooltipContent,
-          });
-        }
-      } else if (event.type === 'leave') {
-        this.clearHoverDecoration();
-        this.tooltip?.hide();
-        lastTooltipContent = null;
-      }
-      // click: no-op for v1.
-    };
 
-    this.interactionLayer = new InteractionLayer<BarRecord>({
-      stage: this.plotContainer,
-      width: this.plotWidth,
-      height: this.plotHeight,
-      hitTest: hitTester,
-      onEvent: handleEvent,
-    });
+    if (this.interactionLayer === null) {
+      this.interactionLayer = new InteractionLayer<BarRecord>({
+        stage: this.plotContainer,
+        width: this.plotWidth,
+        height: this.plotHeight,
+        hitTest: hitTester,
+        onEvent: (event) => {
+          this.handleInteraction(event);
+        },
+      });
+    } else {
+      this.interactionLayer.setHitTester(hitTester);
+      this.interactionLayer.resize(this.plotWidth, this.plotHeight);
+    }
+  }
+
+  /** @internal */
+  private handleInteraction(event: InteractionEvent<BarRecord>): void {
+    if (event.type === 'hover') {
+      if (event.isNewDatum) {
+        this.applyHoverDecoration(event.datum);
+      }
+      if (this.tooltip !== null) {
+        if (event.isNewDatum || this.lastTooltipContent === null) {
+          this.lastTooltipContent = this.formatTooltip(event.datum);
+        }
+        const rect = this.container.getBoundingClientRect();
+        const localX = event.globalPosition.x - rect.left;
+        const localY = event.globalPosition.y - rect.top;
+        this.tooltip.show({
+          x: localX,
+          y: localY,
+          content: this.lastTooltipContent,
+        });
+      }
+    } else if (event.type === 'leave') {
+      this.clearHoverDecoration();
+      this.tooltip?.hide();
+      this.lastTooltipContent = null;
+    }
+    // click: no-op for v1.
   }
 
   /** @internal */
@@ -873,6 +948,41 @@ export class BarChart extends Chart {
     });
     this.hoverAnimationCancel = cancel;
     this.addTween(cancel);
+  }
+}
+
+/**
+ * Create an {@link Axis} from the orientation-erased options that
+ * {@link BarChart.buildSetup} returns. The orientation of the bar chart
+ * fixes which generic each axis is — `string` for the band axis,
+ * `number` for the value axis — so the cast is sound at runtime.
+ *
+ * @internal
+ */
+function createBarAxis(
+  opts: AxisOptions<string> | AxisOptions<number>,
+): Axis<string> | Axis<number> {
+  if (opts.scale.kind === 'band') {
+    return new Axis<string>(opts as AxisOptions<string>);
+  }
+  return new Axis<number>(opts as AxisOptions<number>);
+}
+
+/**
+ * Update an existing bar-chart {@link Axis} in place using the same
+ * orientation-erased options. The axis's generic is class-fixed by the
+ * chart's orientation; passing options for the matching scale kind is safe.
+ *
+ * @internal
+ */
+function updateBarAxis(
+  axis: Axis<string> | Axis<number>,
+  opts: AxisOptions<string> | AxisOptions<number>,
+): void {
+  if (opts.scale.kind === 'band') {
+    (axis as Axis<string>).update(opts as Partial<AxisOptions<string>>);
+  } else {
+    (axis as Axis<number>).update(opts as Partial<AxisOptions<number>>);
   }
 }
 

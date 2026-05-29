@@ -1,7 +1,7 @@
 import { format as d3format } from 'd3-format';
 import { Container, Graphics } from 'pixi.js';
 
-import { Chart } from '../core/Chart.js';
+import { Chart, type UpdateOptions } from '../core/Chart.js';
 import { getCategoricalColor, type CategoricalSchemeName } from '../core/ColorScheme.js';
 import {
   InteractionLayer,
@@ -128,49 +128,33 @@ function angularExtent(start: number, end: number): number {
  * the same instant — driven by {@link tween}. `spec.animation.enter:
  * false` skips it; `prefers-reduced-motion` is honored by `tween()`.
  *
+ * **Update animation.** {@link Chart.update} with `{ animate: true }`
+ * tweens slice angles from the previous to the new values when the
+ * category set is unchanged. When categories differ, the call silently
+ * snaps (animation across a changed slice set requires diffing, which is
+ * a deferred session).
+ *
  * **Hit-testing.** Polar — pointer offset from center is converted to
  * `(r, θ)` and matched against each slice's ring + angular range. Pure
  * function in {@link buildPieHitTester}, unit-tested without a PIXI app.
  *
- * **Lifecycle / resize** mirror BarChart: construction is pure, the first
- * render runs at the tail of {@link init}, resize redraws at the final
- * state (the enter animation does not re-run), {@link destroy} is
- * idempotent.
- *
  * For most use cases, prefer the declarative {@link render} entry point —
  * use this class directly only when you need fine-grained lifecycle control.
- *
- * @example
- * ```ts
- * import { PieChart } from 'pixi-charts';
- *
- * const chart = new PieChart({
- *   container: document.getElementById('chart')!,
- *   spec: {
- *     type: 'pie',
- *     data: [
- *       { browser: 'Chrome', share: 64 },
- *       { browser: 'Safari', share: 19 },
- *       { browser: 'Firefox', share: 8 },
- *       { browser: 'Other', share: 9 },
- *     ],
- *     encoding: {
- *       x: { field: 'browser', type: 'categorical' },
- *       value: { field: 'share', type: 'quantitative' },
- *     },
- *     options: { innerRadius: 60 }, // donut; omit or 0 for a true pie
- *   },
- * });
- * await chart.init();
- * chart.destroy();
- * ```
  */
 export class PieChart extends Chart {
-  private readonly spec: ChartSpec;
+  private spec: ChartSpec;
   private readonly innerRadiusOpt: number;
   private readonly startAngleOpt: number;
 
   private slices: PieSlice[] = [];
+  /**
+   * Slices currently being drawn — typically the same as {@link slices}
+   * at rest, but the update-animation tween writes interpolated angles
+   * here so the redraw loop reads from one consistent source.
+   *
+   * @internal
+   */
+  private displaySlices: PieSlice[] = [];
   private plotContainer: Container | null = null;
   private graphics: Graphics | null = null;
   private centerX = 0;
@@ -183,13 +167,13 @@ export class PieChart extends Chart {
   private tooltip: Tooltip | null = null;
   private interactionLayer: InteractionLayer<PieSlice> | null = null;
   private legend: Legend | null = null;
-  private legendItems: SliceLegendItem[] | null = null;
+  private lastTooltipContent: string | null = null;
 
   /**
    * Hover decoration — a Graphics overlay above the main pie graphics that
    * strokes the hovered slice's outline (wedge for pies, annular wedge for
-   * donuts). Recreated each render as a child of the rebuilt plotContainer;
-   * reset at the top of render so a resize-during-hover starts fresh.
+   * donuts). Created once in ensureSetup and reused across renders; its
+   * alpha is the only state carried between hover events.
    */
   private hoverBorder: Graphics | null = null;
   private hoverAnimationCancel: (() => void) | null = null;
@@ -245,40 +229,49 @@ export class PieChart extends Chart {
     }
   }
 
-  /**
-   * Full render pass. Called by {@link init} for the first frame and by the
-   * base class's resize observer afterwards. Existing primitives are
-   * destroyed and rebuilt each pass.
-   */
-  protected override render(): void {
-    if (this.destroyed || this.app === null) return;
+  protected override replaceData(newData: readonly Record<string, unknown>[]): void {
+    this.spec = { ...this.spec, data: newData };
+  }
 
+  protected override onBeforeUpdate(): void {
+    this.tooltip?.hide();
+    this.lastTooltipContent = null;
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+    if (this.hoverBorder !== null) {
+      this.hoverBorder.alpha = 0;
+    }
+  }
+
+  protected override ensureSetup(): void {
+    if (this.app === null) return;
     const stage = this.app.stage;
 
-    // Cancel the prior pass's enter tween before tearing down its targets —
-    // resize can re-enter render() mid-animation; without this the tween's
-    // next tick would draw into a just-destroyed Graphics and crash.
-    this.cancelAllTweens();
+    if (this.plotContainer === null) {
+      this.plotContainer = new Container();
+      stage.addChild(this.plotContainer);
+    }
+    if (this.graphics === null) {
+      this.graphics = new Graphics();
+      this.plotContainer.addChild(this.graphics);
+    }
+    if (this.hoverBorder === null) {
+      this.hoverBorder = new Graphics();
+      this.hoverBorder.alpha = 0;
+      this.plotContainer.addChild(this.hoverBorder);
+    }
+    if (this.tooltip === null && this.spec.options?.showTooltip !== false) {
+      this.tooltip = new Tooltip({ container: this.container });
+    }
+  }
 
-    // Hover state references the about-to-be-destroyed plotContainer's
-    // children; drop so the next hover starts clean.
-    this.hoverBorder = null;
-    this.hoverAnimationCancel = null;
+  protected override redrawData(options?: UpdateOptions): void {
+    if (this.app === null || this.plotContainer === null) return;
 
-    if (this.plotContainer !== null) {
-      stage.removeChild(this.plotContainer);
-      this.plotContainer.destroy({ children: true });
-      this.plotContainer = null;
-      this.graphics = null;
-    }
-    if (this.interactionLayer) {
-      this.interactionLayer.destroy();
-      this.interactionLayer = null;
-    }
-    if (this.legend) {
-      this.legend.destroy();
-      this.legend = null;
-    }
+    const stage = this.app.stage;
+    const wantAnimate = options?.animate === true;
 
     const m = this.spec.options?.margin;
     const margin = {
@@ -293,28 +286,40 @@ export class PieChart extends Chart {
     // Slices first → legend (when ≥2 slices) → layout → geometry. Donut
     // radius depends on the legend-reduced plot rect, so this ordering keeps
     // the ring from being squashed behind a legend overlap.
-    const slices = this.buildSlices();
-    this.slices = slices;
-    this.legendItems =
-      slices.length >= 2 ? slices.map((s) => ({ label: s.category, color: s.color })) : null;
-
+    const newSlices = this.buildSlices();
     const themeColors = resolveTheme(this.spec.options?.theme, this.spec.options?.colors);
     const showLegend = this.spec.options?.showLegend !== false;
-    const legend =
-      showLegend && this.legendItems !== null && this.legendItems.length > 0
-        ? new Legend({
-            type: 'categorical',
-            orientation: 'vertical',
-            items: this.legendItems,
-            labelColor: themeColors.legendText,
-          })
-        : null;
+    const legendItems: SliceLegendItem[] | null =
+      newSlices.length >= 2 ? newSlices.map((s) => ({ label: s.category, color: s.color })) : null;
+    const shouldShowLegend = showLegend && legendItems !== null && legendItems.length > 0;
+
+    if (shouldShowLegend) {
+      if (this.legend === null) {
+        this.legend = new Legend({
+          type: 'categorical',
+          orientation: 'vertical',
+          items: legendItems,
+          labelColor: themeColors.legendText,
+        });
+        stage.addChild(this.legend.container);
+      } else {
+        this.legend.update({
+          type: 'categorical',
+          orientation: 'vertical',
+          items: legendItems,
+          labelColor: themeColors.legendText,
+        });
+      }
+    } else if (this.legend !== null) {
+      this.legend.destroy();
+      this.legend = null;
+    }
 
     const layout = computeLayout({
       totalWidth: canvasW,
       totalHeight: canvasH,
       margin,
-      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+      legend: this.legend ? { width: this.legend.width, height: this.legend.height } : undefined,
     });
     const plotWidth = layout.plotRect.width;
     const plotHeight = layout.plotRect.height;
@@ -322,7 +327,6 @@ export class PieChart extends Chart {
     this.plotHeight = plotHeight;
 
     if (plotWidth <= 0 || plotHeight <= 0) {
-      legend?.destroy();
       return;
     }
 
@@ -332,39 +336,72 @@ export class PieChart extends Chart {
     this.outerRadius = Math.max(0, Math.min(plotWidth, plotHeight) / 2 - RADIUS_PADDING);
     this.innerRadius = Math.max(0, Math.min(this.innerRadiusOpt, this.outerRadius - 1));
 
-    const plotContainer = new Container();
-    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
-    stage.addChild(plotContainer);
-    this.plotContainer = plotContainer;
+    this.plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
+    if (this.legend !== null && layout.legendRect !== null) {
+      this.legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+    }
 
-    if (slices.length === 0) {
+    // Capture previous slices for animated update interpolation. Identity
+    // is by category — if the set differs at all, we snap.
+    const prevSlices = this.slices;
+    const categoriesIdentical =
+      prevSlices.length === newSlices.length &&
+      prevSlices.every((s, i) => s.category === newSlices[i]?.category);
+
+    this.slices = newSlices;
+
+    if (newSlices.length === 0) {
       // Zero-total case (validator warns at parse time; here we just
       // short-circuit cleanly with no graphics / interaction).
-      legend?.destroy();
+      this.displaySlices = [];
+      this.graphics?.clear();
+      // Tear down the interactionLayer — there's nothing to hit-test.
+      if (this.interactionLayer !== null) {
+        this.interactionLayer.destroy();
+        this.interactionLayer = null;
+      }
       this.didInitialRender = true;
       return;
     }
 
-    const graphics = new Graphics();
-    plotContainer.addChild(graphics);
-    this.graphics = graphics;
+    // Interaction: create on first redraw with slices, swap hit-tester
+    // afterwards. The hit-tester captures FINAL slice angles — the
+    // animation interpolation does not retarget the hit-tester per frame.
+    const hitTester = buildPieHitTester(
+      newSlices,
+      this.centerX,
+      this.centerY,
+      this.innerRadius,
+      this.outerRadius,
+    );
+    if (this.interactionLayer === null) {
+      this.interactionLayer = new InteractionLayer<PieSlice>({
+        stage: this.plotContainer,
+        width: this.plotWidth,
+        height: this.plotHeight,
+        hitTest: hitTester,
+        onEvent: (event) => {
+          this.handleInteraction(event);
+        },
+      });
+    } else {
+      this.interactionLayer.setHitTester(hitTester);
+      this.interactionLayer.resize(this.plotWidth, this.plotHeight);
+    }
 
-    this.drawSlices();
+    // Drive drawing.
+    const enter = this.spec.animation?.enter ?? true;
+    const isFirstRender = !this.didInitialRender;
+    const wantEnterAnim = isFirstRender && enter !== false;
+    const wantUpdateAnim = !isFirstRender && wantAnimate && categoriesIdentical;
 
-    // Hover border sits above the pie's main graphics so the stroke isn't
-    // occluded by the slice fills. Child of plotContainer — destroyed and
-    // recreated each render.
-    const hoverBorder = new Graphics();
-    hoverBorder.alpha = 0;
-    plotContainer.addChild(hoverBorder);
-    this.hoverBorder = hoverBorder;
-
-    this.setupInteractionAndTooltip();
-
-    if (legend !== null && layout.legendRect !== null) {
-      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
-      stage.addChild(legend.container);
-      this.legend = legend;
+    if (wantEnterAnim) {
+      this.runEnterAnimation(typeof enter === 'object' ? enter : {});
+    } else if (wantUpdateAnim) {
+      this.runUpdateAnimation(prevSlices);
+    } else {
+      this.displaySlices = newSlices;
+      this.drawDisplaySlices(1);
     }
 
     this.didInitialRender = true;
@@ -419,6 +456,12 @@ export class PieChart extends Chart {
       });
     }
 
+    // Sort by category so slice angular position, color assignment, and the
+    // legend (one entry per slice) are deterministic across update() calls.
+    // Without sorting, regenerating data with the same categories in a
+    // different order would visibly reshuffle the ring.
+    pending.sort((a, b) => a.category.localeCompare(b.category));
+
     const total = pending.reduce((s, p) => s + p.value, 0);
     if (total <= 0) {
       console.warn(
@@ -470,29 +513,22 @@ export class PieChart extends Chart {
   }
 
   /**
-   * Draw every slice into a single {@link Graphics} (one object, batched
-   * fills). Animates the sweep when first rendering — see {@link drawAt}
-   * for the per-frame geometry.
+   * First-frame enter animation: tween a single 0 → 1 progress, scaling
+   * each slice's visible sweep from the start angle.
    *
    * @internal
    */
-  private drawSlices(): void {
-    if (this.graphics === null || this.app === null) return;
-
-    const renderAt = (progress: number): void => {
-      this.drawAt(progress);
+  private runEnterAnimation(enterOptions: {
+    duration?: number;
+    ease?: import('../core/animation.js').EasingName;
+  }): void {
+    if (this.app === null) return;
+    this.displaySlices = this.slices;
+    const tweenOpts: Parameters<typeof tween>[1] = {
+      onUpdate: (p) => {
+        this.drawDisplaySlices(p);
+      },
     };
-
-    const enter = this.spec.animation?.enter ?? true;
-    const animate = enter !== false && !this.didInitialRender;
-    const enterOptions = typeof enter === 'object' ? enter : {};
-
-    if (!animate) {
-      renderAt(1);
-      return;
-    }
-
-    const tweenOpts: Parameters<typeof tween>[1] = { onUpdate: renderAt };
     if (enterOptions.duration !== undefined) tweenOpts.duration = enterOptions.duration;
     if (enterOptions.ease !== undefined) tweenOpts.ease = enterOptions.ease;
     const cancel = tween(this.app.ticker, tweenOpts);
@@ -500,19 +536,66 @@ export class PieChart extends Chart {
   }
 
   /**
-   * Draw every slice at animation `progress` ∈ `[0, 1]`. Each slice's
-   * currently-visible end-angle is interpolated linearly along its
-   * clockwise extent from `startAngle`. Single-slice pies (full disc) are
-   * a special case — at `progress < 1` we draw a partial wedge from
-   * `startAngle`; at `progress = 1` the full disc.
+   * Animated update: interpolate each slice's start/end angles from the
+   * previous render to the new render. Only called when the category set
+   * is unchanged — otherwise the orchestrator snaps.
+   *
+   * Interpolates `startAngle` and `endAngle` linearly through the shorter
+   * arc (using {@link shortestAngleDelta} so a wrap across `2π → 0` takes
+   * the visually nearest path rather than the long way around).
    *
    * @internal
    */
-  private drawAt(progress: number): void {
+  private runUpdateAnimation(prevSlices: PieSlice[]): void {
+    if (this.app === null) return;
+    const target = this.slices;
+    const startDeltas = target.map((s, i) => {
+      const prev = prevSlices[i];
+      if (prev === undefined) return { sStart: s.startAngle, dStart: 0, sEnd: s.endAngle, dEnd: 0 };
+      return {
+        sStart: prev.startAngle,
+        dStart: shortestAngleDelta(prev.startAngle, s.startAngle),
+        sEnd: prev.endAngle,
+        dEnd: shortestAngleDelta(prev.endAngle, s.endAngle),
+      };
+    });
+    this.displaySlices = target.map((s, i) => {
+      const d = startDeltas[i];
+      if (d === undefined) return s;
+      return { ...s, startAngle: d.sStart, endAngle: d.sEnd };
+    });
+    this.drawDisplaySlices(1);
+    const cancel = tween(this.app.ticker, {
+      onUpdate: (p) => {
+        this.displaySlices = target.map((s, i) => {
+          const d = startDeltas[i];
+          if (d === undefined) return s;
+          return {
+            ...s,
+            startAngle: normalizeAngle(d.sStart + d.dStart * p),
+            endAngle: normalizeAngle(d.sEnd + d.dEnd * p),
+          };
+        });
+        this.drawDisplaySlices(1);
+      },
+    });
+    this.addTween(cancel);
+  }
+
+  /**
+   * Draw {@link displaySlices} at the supplied enter-animation `progress`
+   * (1 for the steady state). The `progress` factor only applies to enter
+   * — update tweens write fully-formed (start, end) angles into
+   * displaySlices and call here with `progress = 1`.
+   *
+   * @internal
+   */
+  private drawDisplaySlices(progress: number): void {
     const g = this.graphics;
     if (g === null) return;
     g.clear();
-    const { centerX, centerY, innerRadius, outerRadius, slices } = this;
+    const { centerX, centerY, innerRadius, outerRadius } = this;
+    const slices = this.displaySlices;
     const isDonut = innerRadius > 0;
 
     for (const slice of slices) {
@@ -536,60 +619,30 @@ export class PieChart extends Chart {
   }
 
   /** @internal */
-  private setupInteractionAndTooltip(): void {
-    if (this.plotContainer === null) return;
-
-    const showTooltip = this.spec.options?.showTooltip !== false;
-
-    if (showTooltip && this.tooltip === null) {
-      this.tooltip = new Tooltip({ container: this.container });
-    }
-    if (!showTooltip && this.tooltip !== null) {
-      this.tooltip.destroy();
-      this.tooltip = null;
-    }
-
-    const hitTester = buildPieHitTester(
-      this.slices,
-      this.centerX,
-      this.centerY,
-      this.innerRadius,
-      this.outerRadius,
-    );
-    let lastTooltipContent: string | null = null;
-    const handleEvent = (event: InteractionEvent<PieSlice>): void => {
-      if (event.type === 'hover') {
-        if (event.isNewDatum) {
-          this.applyHoverDecoration(event.datum);
-        }
-        if (this.tooltip !== null) {
-          if (event.isNewDatum || lastTooltipContent === null) {
-            lastTooltipContent = this.formatTooltip(event.datum);
-          }
-          const rect = this.container.getBoundingClientRect();
-          const localX = event.globalPosition.x - rect.left;
-          const localY = event.globalPosition.y - rect.top;
-          this.tooltip.show({
-            x: localX,
-            y: localY,
-            content: lastTooltipContent,
-          });
-        }
-      } else if (event.type === 'leave') {
-        this.clearHoverDecoration();
-        this.tooltip?.hide();
-        lastTooltipContent = null;
+  private handleInteraction(event: InteractionEvent<PieSlice>): void {
+    if (event.type === 'hover') {
+      if (event.isNewDatum) {
+        this.applyHoverDecoration(event.datum);
       }
-      // click: no-op for v1.
-    };
-
-    this.interactionLayer = new InteractionLayer<PieSlice>({
-      stage: this.plotContainer,
-      width: this.plotWidth,
-      height: this.plotHeight,
-      hitTest: hitTester,
-      onEvent: handleEvent,
-    });
+      if (this.tooltip !== null) {
+        if (event.isNewDatum || this.lastTooltipContent === null) {
+          this.lastTooltipContent = this.formatTooltip(event.datum);
+        }
+        const rect = this.container.getBoundingClientRect();
+        const localX = event.globalPosition.x - rect.left;
+        const localY = event.globalPosition.y - rect.top;
+        this.tooltip.show({
+          x: localX,
+          y: localY,
+          content: this.lastTooltipContent,
+        });
+      }
+    } else if (event.type === 'leave') {
+      this.clearHoverDecoration();
+      this.tooltip?.hide();
+      this.lastTooltipContent = null;
+    }
+    // click: no-op for v1.
   }
 
   /** @internal */
@@ -674,6 +727,21 @@ export class PieChart extends Chart {
     this.hoverAnimationCancel = cancel;
     this.addTween(cancel);
   }
+}
+
+/**
+ * Signed shortest-arc delta from `from` to `to`, both expected in
+ * `[0, 2π)`. Result is in `(-π, π]` — interpolating with this delta
+ * crosses the visually shorter side of the circle (no full sweep when
+ * the displacement is small but happens to span the `2π → 0` boundary).
+ *
+ * @internal
+ */
+function shortestAngleDelta(from: number, to: number): number {
+  let d = to - from;
+  while (d > Math.PI) d -= TWO_PI;
+  while (d < -Math.PI) d += TWO_PI;
+  return d;
 }
 
 /**

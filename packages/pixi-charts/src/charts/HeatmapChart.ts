@@ -4,7 +4,7 @@ import { scaleBand } from 'd3-scale';
 import { BufferImageSource, Container, Graphics, Sprite, Texture } from 'pixi.js';
 
 import { Axis } from '../core/Axis.js';
-import { Chart } from '../core/Chart.js';
+import { Chart, type UpdateOptions } from '../core/Chart.js';
 import { getSequentialColor, type SequentialSchemeName } from '../core/ColorScheme.js';
 import {
   InteractionLayer,
@@ -137,57 +137,43 @@ export interface HeatmapChartOptions {
  * Heatmaps don't animate well in v1: a left-to-right reveal (Line/Area
  * style) doesn't fit a grid, a per-cell cascade looks gimmicky at any
  * realistic size, and a whole-grid alpha fade adds little value over a
- * straight static render. Deliberately omitted. `spec.animation.enter:
- * false` is honoured trivially (it's the only behaviour); `true` or an
- * object form is accepted by the validator but ignored here.
+ * straight static render. Deliberately omitted. `update({ animate: true })`
+ * is accepted but ignored — heatmap updates always snap.
  *
- * ## Lifecycle (identical to the other charts)
+ * ## Lifecycle
  *
  * ```ts
  * const chart = new HeatmapChart({ container, spec });
- * await chart.init();   // creates the PIXI Application AND does the first render
- * chart.destroy();      // idempotent; frees the GPU texture + primitives
+ * await chart.init();    // creates the PIXI Application AND does the first render
+ * chart.update(newRows); // reuses the sprite/texture when grid dims unchanged
+ * chart.destroy();       // idempotent; frees the GPU texture + primitives
  * ```
  *
- * Construction is pure. Resize rebuilds scales/axes/legend (cheap) and
- * resizes the sprite (GPU-side); the buffer-backed texture is reused. The
- * texture is freed in {@link destroy} via `texture.destroy(true)` — same
- * GPU-memory discipline `ScatterChart` established for its shared particle
- * texture, and covered by an explicit test.
+ * **Resize** keeps the sprite/texture and just changes the sprite's pixel
+ * dimensions. **{@link Chart.update}** reuses the same sprite. When the
+ * grid dimensions match (same category sets), the existing buffer is
+ * rewritten in place and uploaded via `source.update()` — no GPU
+ * reallocation. When grid dimensions change, the old {@link Texture} +
+ * {@link BufferImageSource} are destroyed **before** the new ones are
+ * allocated, preventing GPU memory growth across many updates.
  *
  * For most use cases, prefer the declarative {@link render} entry point —
  * use this class directly only when you need fine-grained lifecycle control.
- *
- * @example
- * ```ts
- * import { HeatmapChart } from 'pixi-charts';
- *
- * const chart = new HeatmapChart({
- *   container: document.getElementById('chart')!,
- *   spec: {
- *     type: 'heatmap',
- *     data: [
- *       { hour: '00', day: 'Mon', count: 12 },
- *       { hour: '00', day: 'Tue', count: 18 },
- *       { hour: '01', day: 'Mon', count: 9 },
- *       // ...
- *     ],
- *     encoding: {
- *       x: { field: 'hour', type: 'categorical' },
- *       y: { field: 'day', type: 'categorical' },
- *       color: { field: 'count', type: 'quantitative' },
- *       value: { field: 'count', type: 'quantitative' },
- *     },
- *   },
- * });
- * await chart.init();
- * chart.destroy();
- * ```
  */
 export class HeatmapChart extends Chart {
-  private readonly spec: ChartSpec;
+  private spec: ChartSpec;
 
   private plotContainer: Container | null = null;
+  /**
+   * Back-most child of {@link plotContainer}. Holds each axis's
+   * `gridContainer` — the heatmap is opaque so gridlines are typically
+   * invisible, but the layer keeps the container convention consistent
+   * across all six charts.
+   *
+   * @internal
+   */
+  private gridLayer: Container | null = null;
+  private axesHolder: Container | null = null;
   private xAxis: Axis<string> | null = null;
   private yAxis: Axis<string> | null = null;
   private tooltip: Tooltip | null = null;
@@ -196,13 +182,14 @@ export class HeatmapChart extends Chart {
 
   /**
    * The buffer-backed texture and the Sprite displaying it. Both **persist
-   * for the chart's lifetime** — created on first render with the grid's
-   * resolution, reused on resize (only the sprite's `width`/`height` change,
-   * the texture is GPU-scaled), and freed only in {@link destroy}. A new
-   * `BufferImageSource` is allocated only when the category dimensions
-   * change (which v1's public API can't trigger — destroy and rebuild
-   * instead). That's the whole point of texture-from-buffer: resize is
-   * cheap.
+   * for the chart's lifetime when the grid dimensions are stable** — created
+   * on first render with the grid's resolution, reused on resize (only the
+   * sprite's `width`/`height` change, the texture is GPU-scaled), the
+   * buffer rewritten in place on {@link Chart.update} when dimensions match.
+   * Freed only in {@link destroy} or when the grid dimensions change — in
+   * which case the OLD {@link Texture}/{@link BufferImageSource} are
+   * destroyed BEFORE new ones are allocated, to prevent GPU memory growth
+   * across many updates.
    */
   private sprite: Sprite | null = null;
   private texture: Texture | null = null;
@@ -210,11 +197,12 @@ export class HeatmapChart extends Chart {
 
   /**
    * Hover decoration — a Graphics overlay above the heatmap sprite that
-   * strokes the hovered cell's pixel rectangle. Recreated each render as a
-   * child of the rebuilt plotContainer.
+   * strokes the hovered cell's pixel rectangle. Created once in
+   * {@link ensureSetup} and reused across renders.
    */
   private hoverBorder: Graphics | null = null;
   private hoverAnimationCancel: (() => void) | null = null;
+  private lastTooltipContent: string | null = null;
 
   /** Cached cell records keyed `(xCategory, yCategory) → cell` for hit-test. */
   private cellMap = new Map<string, Map<string, HeatmapCell>>();
@@ -250,13 +238,7 @@ export class HeatmapChart extends Chart {
 
   /**
    * Destroy every owned primitive plus the GPU-backed texture, in addition
-   * to the base-class teardown. Idempotent — the base guards a second call
-   * and each primitive's own destroy is itself idempotent.
-   *
-   * `texture.destroy(true)` frees the underlying source too; without it the
-   * buffer-backed `BufferImageSource` (and the GPU texture it owns) would
-   * survive `app.destroy({ texture: false })` — same per-instance leak
-   * `ScatterChart` guards against.
+   * to the base-class teardown. Idempotent.
    */
   override destroy(): void {
     if (this.destroyed) return;
@@ -293,57 +275,66 @@ export class HeatmapChart extends Chart {
     }
   }
 
-  /**
-   * Full render pass. Called by {@link init} for the first frame and by the
-   * base class's resize observer afterwards. Axes/legend/interaction are
-   * destroyed and rebuilt each pass (cheap); the {@link Sprite} + {@link
-   * Texture} + {@link BufferImageSource} are reused across resizes — only
-   * the sprite's `width`/`height` change.
-   *
-   * **When the texture IS rebuilt.** Only when the category set differs
-   * from the prior render's. v1's public API can't trigger that (no
-   * `setData` method) so in practice the texture is allocated once per
-   * chart instance — but the implementation handles it correctly so a
-   * future data-change API has a place to land.
-   */
-  protected override render(): void {
-    if (this.destroyed || this.app === null) return;
+  protected override replaceData(newData: readonly Record<string, unknown>[]): void {
+    this.spec = { ...this.spec, data: newData };
+  }
 
+  protected override onBeforeUpdate(): void {
+    this.tooltip?.hide();
+    this.lastTooltipContent = null;
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+    if (this.hoverBorder !== null) {
+      this.hoverBorder.alpha = 0;
+    }
+  }
+
+  protected override ensureSetup(): void {
+    if (this.app === null) return;
     const stage = this.app.stage;
 
-    // No enter animation in v1, but cancelAllTweens is cheap and keeps the
-    // pattern aligned with the other charts in case animation lands later.
-    // (It also cancels any in-flight hover-border fade — desirable, since
-    // the old Graphics is about to be destroyed below.)
-    this.cancelAllTweens();
+    if (this.plotContainer === null) {
+      this.plotContainer = new Container();
+      stage.addChild(this.plotContainer);
+    }
+    // gridLayer → axesHolder → (later) sprite → hoverBorder. Order ensures
+    // gridlines and axis chrome sit behind the heatmap surface and hover
+    // border draws on top.
+    if (this.gridLayer === null) {
+      this.gridLayer = new Container();
+      this.plotContainer.addChild(this.gridLayer);
+    }
+    if (this.axesHolder === null) {
+      this.axesHolder = new Container();
+      this.plotContainer.addChild(this.axesHolder);
+    }
+    // The sprite is created lazily in syncTexture once the grid dimensions
+    // are known. We don't pre-add a placeholder here — the addChild on
+    // first creation lands it above the axes holder.
+    if (this.hoverBorder === null) {
+      this.hoverBorder = new Graphics();
+      this.hoverBorder.alpha = 0;
+      this.plotContainer.addChild(this.hoverBorder);
+    }
+    if (this.tooltip === null && this.spec.options?.showTooltip !== false) {
+      this.tooltip = new Tooltip({ container: this.container });
+    }
+  }
 
-    // The hover border was a child of the about-to-be-destroyed plotContainer.
-    // Drop our reference so the next hover starts clean.
-    this.hoverBorder = null;
-    this.hoverAnimationCancel = null;
+  protected override redrawData(_options?: UpdateOptions): void {
+    if (
+      this.app === null ||
+      this.plotContainer === null ||
+      this.axesHolder === null ||
+      this.gridLayer === null
+    ) {
+      return;
+    }
+    void _options;
 
-    if (this.plotContainer !== null) {
-      // Detach the persistent sprite BEFORE destroying the plot container
-      // with `{ children: true }` — otherwise it would be freed and a queued
-      // frame might draw a now-destroyed sprite. Re-parented below.
-      if (this.sprite !== null) this.plotContainer.removeChild(this.sprite);
-      stage.removeChild(this.plotContainer);
-      this.plotContainer.destroy({ children: true });
-      this.plotContainer = null;
-    }
-    if (this.xAxis) {
-      this.xAxis.destroy();
-      this.xAxis = null;
-    }
-    if (this.yAxis) {
-      this.yAxis.destroy();
-      this.yAxis = null;
-    }
-    if (this.legend) {
-      this.legend.destroy();
-      this.legend = null;
-    }
-
+    const stage = this.app.stage;
     const margin = resolveMargin(this.spec);
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
@@ -398,22 +389,35 @@ export class HeatmapChart extends Chart {
 
     const themeColors = resolveTheme(this.spec.options?.theme, this.spec.options?.colors);
 
-    // Build the continuous legend (one per chart) before layout so its width
-    // can reduce the plot. Skipped when the consumer opts out.
+    // Build / update the continuous legend before layout so its width can
+    // reduce the plot. Reused across updates — only its domain / scheme
+    // change with new data.
     const showLegend = this.spec.options?.showLegend !== false;
-    const legend = showLegend
-      ? new Legend({
+    if (showLegend) {
+      if (this.legend === null) {
+        this.legend = new Legend({
           type: 'continuous',
           scheme: colorScheme,
           domain: [minValue, maxValue],
           labelColor: themeColors.legendText,
-        })
-      : null;
+        });
+        stage.addChild(this.legend.container);
+      } else {
+        this.legend.update({
+          type: 'continuous',
+          scheme: colorScheme,
+          domain: [minValue, maxValue],
+          labelColor: themeColors.legendText,
+        });
+      }
+    } else if (this.legend !== null) {
+      this.legend.destroy();
+      this.legend = null;
+    }
 
     // Pre-measure both band axes' labels so the left margin fits the widest
     // y-category and the bottom margin fits the (rotated-or-not) x-category
-    // labels. Heatmaps are the only chart with band on BOTH axes — both can
-    // hit the long-label clipping bug.
+    // labels.
     const labelStyle = { fontFamily: 'sans-serif', fontSize: 11 };
     const yBandMargin = measureBandAxisMargin(yCategories, labelStyle, canvasW, 'cross-horizontal');
     const xBandMargin = measureBandAxisMargin(xCategories, labelStyle, canvasH, 'cross-vertical');
@@ -424,7 +428,7 @@ export class HeatmapChart extends Chart {
       totalWidth: canvasW,
       totalHeight: canvasH,
       margin,
-      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+      legend: this.legend ? { width: this.legend.width, height: this.legend.height } : undefined,
     });
     const plotWidth = layout.plotRect.width;
     const plotHeight = layout.plotRect.height;
@@ -432,7 +436,6 @@ export class HeatmapChart extends Chart {
     this.plotHeight = plotHeight;
 
     if (plotWidth <= 0 || plotHeight <= 0) {
-      legend?.destroy();
       return;
     }
 
@@ -452,9 +455,6 @@ export class HeatmapChart extends Chart {
         row = new Map();
         cellMap.set(raw.xCat, row);
       }
-      // Duplicate (x, y) pairs: last-write-wins. The validator already
-      // warned about duplicates, so a silent overwrite here is the right
-      // behaviour (the chart still renders something usable).
       row.set(raw.yCat, cell);
     }
     this.cellMap = cellMap;
@@ -468,7 +468,7 @@ export class HeatmapChart extends Chart {
     this.xAdapter = xAdapter;
     this.yAdapter = yAdapter;
 
-    // Build axes. First chart with band on BOTH axes — see Axis.ts:
+    // Build axes options. First chart with band on BOTH axes — see Axis.ts:
     // `computeTickData` already half-offsets band labels via `bandwidth()/2`,
     // so labels sit centred over their cells without special-casing here.
     const showChrome = this.spec.options?.showAxes ?? true;
@@ -481,75 +481,81 @@ export class HeatmapChart extends Chart {
     };
     const yTruncated = yBandMargin.truncated;
     const xTruncated = xBandMargin.truncated;
-    const xAxis = new Axis<string>({
+    const xAxisOpts = {
       scale: xAdapter,
-      orientation: 'bottom',
+      orientation: 'bottom' as const,
       length: plotWidth,
       showChrome,
       ...chromeColors,
       ...(xTruncated !== null ? { tickFormat: (v: string): string => xTruncated.get(v) ?? v } : {}),
       ...(xTitle !== undefined && xTitle !== '' ? { title: xTitle } : {}),
-    });
-    const yAxis = new Axis<string>({
+    };
+    const yAxisOpts = {
       scale: yAdapter,
-      orientation: 'left',
+      orientation: 'left' as const,
       length: plotHeight,
       showChrome,
       ...chromeColors,
       ...(yTruncated !== null ? { tickFormat: (v: string): string => yTruncated.get(v) ?? v } : {}),
       ...(yTitle !== undefined && yTitle !== '' ? { title: yTitle } : {}),
-    });
-    this.xAxis = xAxis;
-    this.yAxis = yAxis;
+    };
 
-    // Plot container + axis attachment (same layout the other charts use).
-    const plotContainer = new Container();
-    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
-    stage.addChild(plotContainer);
-    this.plotContainer = plotContainer;
+    if (this.xAxis === null) {
+      this.xAxis = new Axis<string>(xAxisOpts);
+      this.gridLayer.addChild(this.xAxis.gridContainer);
+      this.axesHolder.addChild(this.xAxis.container);
+    } else {
+      this.xAxis.update(xAxisOpts);
+    }
+    if (this.yAxis === null) {
+      this.yAxis = new Axis<string>(yAxisOpts);
+      this.gridLayer.addChild(this.yAxis.gridContainer);
+      this.axesHolder.addChild(this.yAxis.container);
+    } else {
+      this.yAxis.update(yAxisOpts);
+    }
 
-    plotContainer.addChild(yAxis.container);
-    xAxis.container.position.set(0, plotHeight);
-    plotContainer.addChild(xAxis.container);
+    this.plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
+    this.xAxis.container.position.set(0, plotHeight);
+    this.xAxis.gridContainer.position.set(0, plotHeight);
+    if (this.legend !== null && layout.legendRect !== null) {
+      this.legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+    }
 
-    // Texture: rebuild only when the grid dimensions changed (typically just
-    // the first render). Resize keeps the same texture; the sprite is the
-    // thing that gets stretched.
+    // Texture: rebuild only when the grid dimensions changed. Same-dim
+    // updates rewrite the buffer in place. Whenever the sprite is first
+    // created here, we add it as a child of plotContainer between
+    // axesHolder and hoverBorder (in z-order) by adding after the axes
+    // (already there) and BEFORE re-promoting hoverBorder to the top.
+    const spriteJustCreated = this.sprite === null;
     this.syncTexture();
 
     if (this.sprite !== null) {
       this.sprite.width = plotWidth;
       this.sprite.height = plotHeight;
       this.sprite.position.set(0, 0);
-      plotContainer.addChild(this.sprite);
+      if (spriteJustCreated) {
+        // First-time attach. We then re-promote hoverBorder to the top so
+        // it draws above the sprite.
+        this.plotContainer.addChild(this.sprite);
+        if (this.hoverBorder !== null) {
+          this.plotContainer.addChild(this.hoverBorder);
+        }
+      }
     }
-
-    // Hover border lives above the sprite so the stroke isn't occluded by
-    // the heatmap texture. A child of plotContainer — destroyed/recreated
-    // each render.
-    const hoverBorder = new Graphics();
-    hoverBorder.alpha = 0;
-    plotContainer.addChild(hoverBorder);
-    this.hoverBorder = hoverBorder;
 
     this.setupInteractionAndTooltip();
-
-    if (legend !== null && layout.legendRect !== null) {
-      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
-      stage.addChild(legend.container);
-      this.legend = legend;
-    }
   }
 
   /**
    * Allocate or reuse the buffer-backed texture and its sprite.
    *
-   * Rebuilds when the grid dimensions or any cell colour has changed since
-   * the prior render; reuses (and just rewrites the existing buffer in
-   * place if the dimensions match but colours differ) otherwise. The most
-   * common reuse case in v1 is **resize**: same data, same categories, only
-   * the sprite's pixel `width`/`height` need to change — which happens
-   * outside this method, GPU-side.
+   * Rebuilds when the grid dimensions have changed since the prior render
+   * (destroying the old {@link Texture}/{@link BufferImageSource} FIRST so
+   * the GPU resources don't leak); otherwise rewrites the existing buffer
+   * in place and calls `source.update()` to re-upload. Resize never lands
+   * here for a dim change — only the sprite's pixel `width`/`height` need
+   * to change, which happens outside this method.
    *
    * @internal
    */
@@ -558,15 +564,13 @@ export class HeatmapChart extends Chart {
     const height = this.yCategories.length;
     if (width === 0 || height === 0) return;
 
-    // If categories dimensions changed, we MUST rebuild the buffer —
-    // resizing a typed array in-place isn't free and PIXI's BufferImageSource
-    // is created with a fixed `width`/`height`. (Optional-chain returns
-    // `undefined` when `this.source` is null, which compares unequal to any
-    // numeric `width`/`height`, so this also covers the first-render case.)
     const dimsChanged = this.source?.width !== width || this.source.height !== height;
 
     if (dimsChanged) {
       if (this.texture !== null) {
+        // CRITICAL: free the old GPU resources BEFORE allocating the new
+        // ones. Repeated updates that change grid dimensions would
+        // otherwise accumulate textures and eventually crash the GPU.
         this.texture.destroy(true);
         this.texture = null;
         this.source = null;
@@ -586,19 +590,15 @@ export class HeatmapChart extends Chart {
       });
       this.source = source;
       this.texture = new Texture({ source });
-      // Lazy-init the sprite. Width/height are set per-render in the caller
-      // because they're the plot-area pixel size, not the texture's grid
-      // size.
       if (this.sprite === null) {
         this.sprite = new Sprite(this.texture);
       } else {
         this.sprite.texture = this.texture;
       }
     } else {
-      // Same dimensions: rewrite the existing buffer in place. No new GPU
-      // upload happens for a no-op rewrite either; PIXI uploads on demand.
-      // `dimsChanged === false` proved source !== null, so the local binding
-      // is non-null without an assertion.
+      // Same dimensions: rewrite the existing buffer in place and re-upload
+      // to GPU. No new Texture / Source allocations — the warm path that
+      // makes streaming updates affordable.
       const source = this.source;
       if (source === null) return;
       const buffer = source.resource as Uint8ClampedArray;
@@ -614,17 +614,9 @@ export class HeatmapChart extends Chart {
     if (this.xAdapter === null || this.yAdapter === null) return;
 
     const showTooltip = this.spec.options?.showTooltip !== false;
-
-    if (this.interactionLayer) {
-      this.interactionLayer.destroy();
-      this.interactionLayer = null;
-    }
     if (this.tooltip && !showTooltip) {
       this.tooltip.destroy();
       this.tooltip = null;
-    }
-    if (showTooltip && this.tooltip === null) {
-      this.tooltip = new Tooltip({ container: this.container });
     }
 
     const hitTester = buildHeatmapHitTester(
@@ -635,38 +627,45 @@ export class HeatmapChart extends Chart {
       this.plotHeight,
     );
 
-    let lastTooltipContent: string | null = null;
-    const handleEvent = (event: InteractionEvent<HeatmapCell>): void => {
-      if (event.type === 'hover') {
-        if (event.isNewDatum) {
-          this.applyHoverDecoration(event.datum);
-        }
-        if (this.tooltip !== null) {
-          if (event.isNewDatum || lastTooltipContent === null) {
-            lastTooltipContent = this.formatTooltip(event.datum);
-          }
-          const rect = this.container.getBoundingClientRect();
-          this.tooltip.show({
-            x: event.globalPosition.x - rect.left,
-            y: event.globalPosition.y - rect.top,
-            content: lastTooltipContent,
-          });
-        }
-      } else if (event.type === 'leave') {
-        this.clearHoverDecoration();
-        this.tooltip?.hide();
-        lastTooltipContent = null;
-      }
-      // click: no-op for v1 (wired so a future handler drops in cleanly).
-    };
+    if (this.interactionLayer === null) {
+      this.interactionLayer = new InteractionLayer<HeatmapCell>({
+        stage: this.plotContainer,
+        width: this.plotWidth,
+        height: this.plotHeight,
+        hitTest: hitTester,
+        onEvent: (event) => {
+          this.handleInteraction(event);
+        },
+      });
+    } else {
+      this.interactionLayer.setHitTester(hitTester);
+      this.interactionLayer.resize(this.plotWidth, this.plotHeight);
+    }
+  }
 
-    this.interactionLayer = new InteractionLayer<HeatmapCell>({
-      stage: this.plotContainer,
-      width: this.plotWidth,
-      height: this.plotHeight,
-      hitTest: hitTester,
-      onEvent: handleEvent,
-    });
+  /** @internal */
+  private handleInteraction(event: InteractionEvent<HeatmapCell>): void {
+    if (event.type === 'hover') {
+      if (event.isNewDatum) {
+        this.applyHoverDecoration(event.datum);
+      }
+      if (this.tooltip !== null) {
+        if (event.isNewDatum || this.lastTooltipContent === null) {
+          this.lastTooltipContent = this.formatTooltip(event.datum);
+        }
+        const rect = this.container.getBoundingClientRect();
+        this.tooltip.show({
+          x: event.globalPosition.x - rect.left,
+          y: event.globalPosition.y - rect.top,
+          content: this.lastTooltipContent,
+        });
+      }
+    } else if (event.type === 'leave') {
+      this.clearHoverDecoration();
+      this.tooltip?.hide();
+      this.lastTooltipContent = null;
+    }
+    // click: no-op for v1 (wired so a future handler drops in cleanly).
   }
 
   /** @internal */

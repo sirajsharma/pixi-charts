@@ -1,7 +1,7 @@
 import { Container, Graphics } from 'pixi.js';
 
 import { Axis } from '../core/Axis.js';
-import { Chart } from '../core/Chart.js';
+import { Chart, type UpdateOptions } from '../core/Chart.js';
 import {
   InteractionLayer,
   type HitTester,
@@ -18,8 +18,8 @@ import {
   DOWNSAMPLE_TARGET,
   DOWNSAMPLE_THRESHOLD,
   HIT_TEST_RADIUS_PX,
+  buildCartesianAxisPrep,
   buildCartesianHitTester,
-  buildCartesianScales,
   buildCartesianSeries,
   formatCartesianTooltip,
   resolveAxisOptions,
@@ -62,13 +62,11 @@ export interface AreaChartOptions {
  * Only the drawing differs: a closed polygon (`fill` + top-edge `stroke`)
  * rather than a bare stroke.
  *
- * **Lifecycle / resize / hit-testing** are identical to `LineChart`:
- *
- * ```ts
- * const chart = new AreaChart({ container, spec });
- * await chart.init();    // creates the PIXI app AND does the first render
- * chart.destroy();       // idempotent; cancels tweens, tears down primitives
- * ```
+ * **Lifecycle and updates.** Construction is pure. The first render runs
+ * at the tail of {@link init}. {@link Chart.update} reuses the PIXI
+ * Application, axes, legend, and interaction layer; only data-derived
+ * geometry is recomputed. `update({ animate: true })` currently snaps;
+ * tweening area geometry across changing point counts requires diffing.
  *
  * **Baseline.** The fill closes along `yAdapter.scale(0)` — zero projected
  * through the y-adapter, *not* `plotHeight`. When the y-domain doesn't
@@ -84,35 +82,18 @@ export interface AreaChartOptions {
  *
  * For most use cases, prefer the declarative {@link render} entry point —
  * use this class directly only when you need fine-grained lifecycle control.
- *
- * @example
- * ```ts
- * import { AreaChart } from 'pixi-charts';
- *
- * const chart = new AreaChart({
- *   container: document.getElementById('chart')!,
- *   spec: {
- *     type: 'area',
- *     data: [
- *       { day: 1, visits: 240 },
- *       { day: 2, visits: 312 },
- *       { day: 3, visits: 198 },
- *     ],
- *     encoding: {
- *       x: { field: 'day', type: 'quantitative' },
- *       y: { field: 'visits', type: 'quantitative' },
- *     },
- *   },
- * });
- * await chart.init();
- * chart.destroy();
- * ```
  */
 export class AreaChart extends Chart {
-  private readonly spec: ChartSpec;
+  private spec: ChartSpec;
 
   private series: CartesianSeries[] = [];
   private plotContainer: Container | null = null;
+  /**
+   * Back-most layer inside {@link plotContainer}. Holds each axis's
+   * `gridContainer`, added BEFORE {@link areasContainer} so gridlines render
+   * behind area fills instead of cutting through them.
+   */
+  private gridLayer: Container | null = null;
   private areasContainer: Container | null = null;
   private xAxis: Axis<XValue> | null = null;
   private yAxis: Axis<number> | null = null;
@@ -123,15 +104,16 @@ export class AreaChart extends Chart {
   private tooltip: Tooltip | null = null;
   private interactionLayer: InteractionLayer<CartesianHit> | null = null;
   private legend: Legend | null = null;
+  private lastTooltipContent: string | null = null;
+
   /**
    * Hover decoration — a filled circle drawn at the active datum on the
-   * area's top edge. Recreated each render as a child of the rebuilt
-   * plotContainer and reset to null at the top of render so a
-   * resize-during-hover starts fresh on the next pointermove.
+   * area's top edge. Created once in {@link ensureSetup} and reused
+   * across updates.
    */
   private hoverMarker: Graphics | null = null;
   private hoverAnimationCancel: (() => void) | null = null;
-  /** Tracks whether the very first render has happened (so resize skips the enter animation). */
+  /** Tracks whether the very first render has happened (so resize/update skip the enter animation). */
   private didInitialRender = false;
   /** Tracks whether the downsampling notice has already been logged for this instance. */
   private loggedDownsample = false;
@@ -159,8 +141,7 @@ export class AreaChart extends Chart {
 
   /**
    * Destroy every owned primitive in addition to the base-class teardown.
-   * Idempotent — the base class guards a second call, but each primitive
-   * is also idempotent so a partial-init failure stays safe.
+   * Idempotent.
    */
   override destroy(): void {
     if (this.destroyed) return;
@@ -189,72 +170,92 @@ export class AreaChart extends Chart {
     }
   }
 
-  /**
-   * Full render pass. Called by {@link init} for the first frame, and by
-   * the base class's resize observer on subsequent container resizes.
-   * Existing primitives are destroyed and rebuilt on each pass.
-   */
-  protected override render(): void {
-    if (this.destroyed || this.app === null) return;
+  protected override replaceData(newData: readonly Record<string, unknown>[]): void {
+    this.spec = { ...this.spec, data: newData };
+  }
 
+  protected override onBeforeUpdate(): void {
+    this.tooltip?.hide();
+    this.lastTooltipContent = null;
+    if (this.hoverAnimationCancel !== null) {
+      this.hoverAnimationCancel();
+      this.hoverAnimationCancel = null;
+    }
+    if (this.hoverMarker !== null) {
+      this.hoverMarker.alpha = 0;
+    }
+  }
+
+  protected override ensureSetup(): void {
+    if (this.app === null) return;
     const stage = this.app.stage;
 
-    // Cancel the prior pass's enter tween before tearing down its targets.
-    // The real-browser ResizeObserver fires immediately on observe(), so a
-    // resize re-enters render() mid enter-animation; without this the tween's
-    // next tick draws into a just-destroyed Graphics and crashes. (Unit tests
-    // miss it — the mock ResizeObserver never auto-fires during a live tween.)
-    this.cancelAllTweens();
+    if (this.plotContainer === null) {
+      this.plotContainer = new Container();
+      stage.addChild(this.plotContainer);
+    }
+    if (this.gridLayer === null) {
+      this.gridLayer = new Container();
+      this.plotContainer.addChild(this.gridLayer);
+    }
+    if (this.areasContainer === null) {
+      this.areasContainer = new Container();
+      this.plotContainer.addChild(this.areasContainer);
+    }
+    if (this.hoverMarker === null) {
+      this.hoverMarker = new Graphics();
+      this.hoverMarker.alpha = 0;
+      this.plotContainer.addChild(this.hoverMarker);
+    }
+    if (this.tooltip === null && this.spec.options?.showTooltip !== false) {
+      this.tooltip = new Tooltip({ container: this.container });
+    }
+  }
 
-    // The hover marker lives inside plotContainer and dies with it below.
-    // Drop our references so the next hover starts clean; cancelAllTweens()
-    // above has already invalidated any in-flight hover fade.
-    this.hoverMarker = null;
-    this.hoverAnimationCancel = null;
+  protected override redrawData(_options?: UpdateOptions): void {
+    if (this.app === null || this.plotContainer === null || this.areasContainer === null) return;
+    void _options;
 
-    if (this.plotContainer !== null) {
-      stage.removeChild(this.plotContainer);
-      this.plotContainer.destroy({ children: true });
-      this.plotContainer = null;
-    }
-    if (this.xAxis) {
-      this.xAxis.destroy();
-      this.xAxis = null;
-    }
-    if (this.yAxis) {
-      this.yAxis.destroy();
-      this.yAxis = null;
-    }
-    if (this.legend) {
-      this.legend.destroy();
-      this.legend = null;
-    }
-
+    const stage = this.app.stage;
     const margin = resolveMargin(this.spec);
     const canvasW = this.app.screen.width;
     const canvasH = this.app.screen.height;
-
     const themeColors = resolveChartTheme(this.spec);
 
     // Series first → optional Legend → layout → scales. Same flow as LineChart;
     // see the comment block there for why this ordering matters.
     const series = buildCartesianSeries(this.spec);
     const showLegend = this.spec.options?.showLegend !== false;
-    const legend =
-      showLegend && series.length >= 2
-        ? new Legend({
-            type: 'categorical',
-            orientation: 'vertical',
-            items: series.map((s) => ({ label: s.name, color: s.color })),
-            labelColor: themeColors.legendText,
-          })
-        : null;
+    const shouldShowLegend = showLegend && series.length >= 2;
+    const legendItems = series.map((s) => ({ label: s.name, color: s.color }));
+
+    if (shouldShowLegend) {
+      if (this.legend === null) {
+        this.legend = new Legend({
+          type: 'categorical',
+          orientation: 'vertical',
+          items: legendItems,
+          labelColor: themeColors.legendText,
+        });
+        stage.addChild(this.legend.container);
+      } else {
+        this.legend.update({
+          type: 'categorical',
+          orientation: 'vertical',
+          items: legendItems,
+          labelColor: themeColors.legendText,
+        });
+      }
+    } else if (this.legend !== null) {
+      this.legend.destroy();
+      this.legend = null;
+    }
 
     const layout = computeLayout({
       totalWidth: canvasW,
       totalHeight: canvasH,
       margin,
-      legend: legend ? { width: legend.width, height: legend.height } : undefined,
+      legend: this.legend ? { width: this.legend.width, height: this.legend.height } : undefined,
     });
     const plotWidth = layout.plotRect.width;
     const plotHeight = layout.plotRect.height;
@@ -262,58 +263,73 @@ export class AreaChart extends Chart {
     this.plotHeight = plotHeight;
 
     if (plotWidth <= 0 || plotHeight <= 0) {
-      legend?.destroy();
       return;
     }
 
-    const setup = buildCartesianScales(
+    const prep = buildCartesianAxisPrep(
       this.spec,
       series,
       plotWidth,
       plotHeight,
       resolveAxisOptions(this.spec),
     );
-    this.series = setup.series;
-    this.xAdapter = setup.xAdapter;
-    this.yAdapter = setup.yAdapter;
-    this.xAxis = setup.xAxis;
-    this.yAxis = setup.yAxis;
+    this.series = prep.series;
+    this.xAdapter = prep.xAdapter;
+    this.yAdapter = prep.yAdapter;
 
     this.maybeLogDownsample();
 
-    const plotContainer = new Container();
-    plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
-    stage.addChild(plotContainer);
-    this.plotContainer = plotContainer;
+    this.plotContainer.position.set(layout.plotRect.x, layout.plotRect.y);
+    if (this.legend !== null && layout.legendRect !== null) {
+      this.legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
+    }
 
-    plotContainer.addChild(this.yAxis.container);
+    // Each axis's gridContainer is added to gridLayer (behind data), chrome
+    // to plotContainer (drawn after data so labels stay legible). Both share
+    // the same local origin — see Axis docs.
+    const gridLayer = this.gridLayer;
+    if (gridLayer === null) return;
+    if (this.xAxis === null) {
+      this.xAxis = new Axis<XValue>(prep.xAxisOpts);
+      gridLayer.addChild(this.xAxis.gridContainer);
+      this.plotContainer.addChild(this.xAxis.container);
+    } else {
+      this.xAxis.update(prep.xAxisOpts);
+    }
     this.xAxis.container.position.set(0, plotHeight);
-    plotContainer.addChild(this.xAxis.container);
+    this.xAxis.gridContainer.position.set(0, plotHeight);
 
-    // Areas container — separate from axes for easier z-order management.
-    const areasContainer = new Container();
-    plotContainer.addChild(areasContainer);
-    this.areasContainer = areasContainer;
+    if (this.yAxis === null) {
+      this.yAxis = new Axis<number>(prep.yAxisOpts);
+      gridLayer.addChild(this.yAxis.gridContainer);
+      this.plotContainer.addChild(this.yAxis.container);
+    } else {
+      this.yAxis.update(prep.yAxisOpts);
+    }
 
+    this.clearAreas();
     this.drawAreas();
-
-    // Hover marker sits above the areas so it isn't occluded by series fills.
-    // Lives inside plotContainer so it's destroyed/recreated with each render
-    // — no per-render leak risk.
-    const hoverMarker = new Graphics();
-    hoverMarker.alpha = 0;
-    plotContainer.addChild(hoverMarker);
-    this.hoverMarker = hoverMarker;
 
     this.setupInteractionAndTooltip();
 
-    if (legend !== null && layout.legendRect !== null) {
-      legend.container.position.set(layout.legendRect.x, layout.legendRect.y);
-      stage.addChild(legend.container);
-      this.legend = legend;
-    }
-
     this.didInitialRender = true;
+  }
+
+  /**
+   * Destroy every per-series {@link Graphics} currently inside
+   * {@link areasContainer}. Called at the start of each {@link redrawData}
+   * before {@link drawAreas} repopulates with the new series. The
+   * container itself is reused.
+   *
+   * @internal
+   */
+  private clearAreas(): void {
+    if (this.areasContainer === null) return;
+    const children = [...this.areasContainer.children];
+    for (const child of children) {
+      child.destroy();
+    }
+    this.areasContainer.removeChildren();
   }
 
   /**
@@ -355,7 +371,7 @@ export class AreaChart extends Chart {
    * from the first `progress * points.length` points each frame — a
    * left-to-right reveal. Honors `spec.animation.enter` (`false` skips the
    * tween; an object passes `duration` / `ease` through) and reduced-motion
-   * via `tween()`. Resize passes draw the final state immediately.
+   * via `tween()`. Resize / update draw the final state immediately.
    *
    * @internal
    */
@@ -424,59 +440,65 @@ export class AreaChart extends Chart {
     }
   }
 
-  /** @internal */
+  /**
+   * Create the {@link InteractionLayer} on the first call; on subsequent
+   * calls, swap the hit-tester and resize. The sprite is added to
+   * {@link plotContainer} once and persists across updates.
+   *
+   * @internal
+   */
   private setupInteractionAndTooltip(): void {
     if (this.plotContainer === null || this.app === null) return;
 
     const showTooltip = this.spec.options?.showTooltip !== false;
-
-    if (this.interactionLayer) {
-      this.interactionLayer.destroy();
-      this.interactionLayer = null;
-    }
     if (this.tooltip && !showTooltip) {
       this.tooltip.destroy();
       this.tooltip = null;
     }
-    if (showTooltip && this.tooltip === null) {
-      this.tooltip = new Tooltip({ container: this.container });
-    }
 
     const hitTester = this.buildHitTester();
-    let lastTooltipContent: string | null = null;
-    const handleEvent = (event: InteractionEvent<CartesianHit>): void => {
-      if (event.type === 'hover') {
-        if (event.isNewDatum) {
-          this.applyHoverDecoration(event.datum);
-        }
-        if (this.tooltip !== null) {
-          if (event.isNewDatum || lastTooltipContent === null) {
-            lastTooltipContent = this.formatTooltip(event.datum);
-          }
-          const rect = this.container.getBoundingClientRect();
-          const localX = event.globalPosition.x - rect.left;
-          const localY = event.globalPosition.y - rect.top;
-          this.tooltip.show({
-            x: localX,
-            y: localY,
-            content: lastTooltipContent,
-          });
-        }
-      } else if (event.type === 'leave') {
-        this.clearHoverDecoration();
-        this.tooltip?.hide();
-        lastTooltipContent = null;
-      }
-      // click: no-op for v1.
-    };
 
-    this.interactionLayer = new InteractionLayer<CartesianHit>({
-      stage: this.plotContainer,
-      width: this.plotWidth,
-      height: this.plotHeight,
-      hitTest: hitTester,
-      onEvent: handleEvent,
-    });
+    if (this.interactionLayer === null) {
+      this.interactionLayer = new InteractionLayer<CartesianHit>({
+        stage: this.plotContainer,
+        width: this.plotWidth,
+        height: this.plotHeight,
+        hitTest: hitTester,
+        onEvent: (event) => {
+          this.handleInteraction(event);
+        },
+      });
+    } else {
+      this.interactionLayer.setHitTester(hitTester);
+      this.interactionLayer.resize(this.plotWidth, this.plotHeight);
+    }
+  }
+
+  /** @internal */
+  private handleInteraction(event: InteractionEvent<CartesianHit>): void {
+    if (event.type === 'hover') {
+      if (event.isNewDatum) {
+        this.applyHoverDecoration(event.datum);
+      }
+      if (this.tooltip !== null) {
+        if (event.isNewDatum || this.lastTooltipContent === null) {
+          this.lastTooltipContent = this.formatTooltip(event.datum);
+        }
+        const rect = this.container.getBoundingClientRect();
+        const localX = event.globalPosition.x - rect.left;
+        const localY = event.globalPosition.y - rect.top;
+        this.tooltip.show({
+          x: localX,
+          y: localY,
+          content: this.lastTooltipContent,
+        });
+      }
+    } else if (event.type === 'leave') {
+      this.clearHoverDecoration();
+      this.tooltip?.hide();
+      this.lastTooltipContent = null;
+    }
+    // click: no-op for v1.
   }
 
   /** @internal */

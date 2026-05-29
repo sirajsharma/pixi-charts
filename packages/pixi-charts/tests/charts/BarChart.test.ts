@@ -797,6 +797,171 @@ function horizontalLongLabelSpec(): ChartSpec {
   };
 }
 
+describe('BarChart — update()', () => {
+  it('throws when called before init() has resolved', () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    expect(() => chart.update([{ name: 'X', count: 1 }])).toThrow(/before init/);
+  });
+
+  it('is a silent no-op after destroy()', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+    chart.destroy();
+    expect(() => chart.update([{ name: 'X', count: 1 }])).not.toThrow();
+  });
+
+  it('preserves the PIXI Application instance across update()', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+    const appBefore = MockApp.instances[0]!;
+
+    chart.update([
+      { name: 'X', count: 5 },
+      { name: 'Y', count: 7 },
+    ]);
+
+    expect(MockApp.instances).toHaveLength(1);
+    expect(MockApp.instances[0]).toBe(appBefore);
+    chart.destroy();
+  });
+
+  it('reuses the bars Graphics (clears and redraws — no new bars Graphics)', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const initialBarsGraphics = barsGfx();
+    const clearsBefore = initialBarsGraphics.clearCalls;
+
+    chart.update([
+      { name: 'A', count: 100 },
+      { name: 'B', count: 50 },
+      { name: 'C', count: 75 },
+    ]);
+
+    // The same Graphics instance is reused — it was cleared and redrawn.
+    expect(initialBarsGraphics.clearCalls).toBeGreaterThan(clearsBefore);
+    // Three new rect calls reflect the new values.
+    expect(initialBarsGraphics.rectCalls).toHaveLength(3);
+    chart.destroy();
+  });
+
+  it('reuses the InteractionLayer sprite across update()', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const spritesBefore = MockSprite.sInstances.length;
+    chart.update([
+      { name: 'A', count: 1 },
+      { name: 'B', count: 2 },
+    ]);
+
+    expect(MockSprite.sInstances.length).toBe(spritesBefore);
+    chart.destroy();
+  });
+
+  it('reflects new bar heights when the value domain changes', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const g = barsGfx();
+    const heightsBefore = g.rectCalls.map((r) => r.h);
+
+    // Same categories, very different values → axis rescales → heights differ.
+    chart.update([
+      { name: 'A', count: 1000 },
+      { name: 'B', count: 5000 },
+      { name: 'C', count: 3000 },
+    ]);
+
+    const heightsAfter = g.rectCalls.map((r) => r.h);
+    expect(heightsAfter).toHaveLength(3);
+    // The largest bar still occupies most of the plot height (axis rescaled).
+    expect(Math.max(...heightsAfter)).toBeGreaterThan(0);
+    expect(heightsAfter).not.toEqual(heightsBefore);
+    chart.destroy();
+  });
+
+  it('animate: true tweens when categories are unchanged', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({
+      container,
+      spec: makeSpec({ animation: { enter: false } }),
+    });
+    await chart.init();
+    const tickerBefore = MockApp.instances[0]!.ticker.add.mock.calls.length;
+
+    chart.update(
+      [
+        { name: 'A', count: 50 },
+        { name: 'B', count: 60 },
+        { name: 'C', count: 70 },
+      ],
+      { animate: true },
+    );
+
+    expect(MockApp.instances[0]!.ticker.add.mock.calls.length).toBeGreaterThan(tickerBefore);
+    chart.destroy();
+  });
+
+  it('animate: true snaps when categories differ from the previous render', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({
+      container,
+      spec: makeSpec({ animation: { enter: false } }),
+    });
+    await chart.init();
+    const tickerBefore = MockApp.instances[0]!.ticker.add.mock.calls.length;
+
+    chart.update(
+      [
+        { name: 'X', count: 5 },
+        { name: 'Y', count: 7 },
+      ],
+      { animate: true },
+    );
+
+    // Categories changed (A,B,C → X,Y) → no tween, just a snap redraw.
+    expect(MockApp.instances[0]!.ticker.add.mock.calls.length).toBe(tickerBefore);
+    chart.destroy();
+  });
+
+  it('hides the tooltip on update()', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    // Trigger a hover so the tooltip is shown.
+    const sprite = MockSprite.sInstances[0]!;
+    const moveHandlers = sprite.handlers.get('pointermove');
+    expect(moveHandlers).toBeDefined();
+    for (const h of moveHandlers!) {
+      h({
+        button: 0,
+        client: { x: 120, y: 400 },
+        getLocalPosition: () => ({ x: 120, y: 400 }),
+      });
+    }
+    const tip = container.querySelector('div');
+    expect(tip).not.toBeNull();
+
+    chart.update([
+      { name: 'A', count: 11 },
+      { name: 'B', count: 31 },
+      { name: 'C', count: 21 },
+    ]);
+
+    // Tooltip element still exists (reused DOM), but its display is hidden.
+    expect(container.querySelector('div')!.style.display).toBe('none');
+    chart.destroy();
+  });
+});
+
 describe('BarChart — long band-axis labels (horizontal)', () => {
   it('renders ellipsis-truncated labels when categories exceed the margin cap', async () => {
     // BarChart's mocked PIXI Text reports a fixed width=30 regardless of

@@ -162,25 +162,40 @@ function geometryFor(
 }
 
 /**
- * PIXI-rendered chart axis: line, tick marks, tick labels, and optional
- * gridlines. The consumer adds {@link Axis.container} to its own stage and
- * positions it.
+ * PIXI-rendered chart axis: line, tick marks, tick labels, optional title,
+ * and (separately) optional gridlines. The consumer adds
+ * {@link Axis.container} (chrome) to its stage and, when gridlines are
+ * enabled, also adds {@link Axis.gridContainer} to a layer BEHIND the data
+ * so gridlines don't draw over filled shapes (bars, areas).
  *
  * Lifecycle mirrors {@link import('./Chart.js').Chart}: explicit
  * {@link destroy} that's idempotent and after which {@link update} throws.
  *
- * **Render strategy.** `update()` is a full re-render — children are
- * destroyed and rebuilt. Diffing is a deferred optimization; ticks rarely
- * exceed ~20 per axis and `PIXI.Text` construction dominates that cost
- * anyway. A future pass may introduce `BitmapText` or a small object pool.
+ * **Render strategy.** `update()` is a full re-render — children of both
+ * containers are destroyed and rebuilt. Diffing is a deferred optimization;
+ * ticks rarely exceed ~20 per axis and `PIXI.Text` construction dominates
+ * that cost anyway. A future pass may introduce `BitmapText` or a small
+ * object pool.
  *
- * **Layering.** Gridlines are added FIRST so they render behind the axis
- * line and ticks without needing `sortableChildren` (which adds a per-frame
- * sort cost).
+ * **Two containers, not one.** Gridlines live in their own container so the
+ * consumer can place them behind data shapes in the stage's z-order. Both
+ * containers share the axis's local origin; the consumer positions them
+ * identically (the axis is unaware of its own stage position).
  */
 export class Axis<TDomain> {
-  /** The PIXI container holding all axis children. Consumer adds this to its stage. */
+  /**
+   * Chrome container: axis line, tick marks, tick labels, and optional
+   * title. Consumer positions and adds to its stage. Typically drawn
+   * IN FRONT of data so labels stay legible.
+   */
   readonly container: Container;
+  /**
+   * Gridlines container — empty when `showGrid` is false. Consumer
+   * positions it identically to {@link container} and adds to a layer
+   * BEHIND data shapes so gridlines never sit on top of bars / areas /
+   * lines.
+   */
+  readonly gridContainer: Container;
 
   private options: AxisOptions<TDomain>;
   private _destroyed = false;
@@ -188,6 +203,7 @@ export class Axis<TDomain> {
   constructor(opts: AxisOptions<TDomain>) {
     this.options = opts;
     this.container = new Container();
+    this.gridContainer = new Container();
     this.build();
   }
 
@@ -220,21 +236,25 @@ export class Axis<TDomain> {
     this._destroyed = true;
     this.clearChildren();
     this.container.destroy({ children: true });
+    this.gridContainer.destroy({ children: true });
   }
 
   /**
-   * Drop all current children, destroying each so PIXI textures are
-   * released. Used by both {@link update} and {@link destroy}.
+   * Drop all current children from both containers, destroying each so
+   * PIXI textures are released. Used by both {@link update} and
+   * {@link destroy}.
    *
    * @internal
    */
   private clearChildren(): void {
-    // Iterate a copy because removeChildren mutates `this.container.children`.
-    const children = [...this.container.children];
-    for (const child of children) {
-      child.destroy();
+    // Iterate a copy because removeChildren mutates the child arrays.
+    for (const parent of [this.container, this.gridContainer]) {
+      const children = [...parent.children];
+      for (const child of children) {
+        child.destroy();
+      }
+      parent.removeChildren();
     }
-    this.container.removeChildren();
   }
 
   /**
@@ -270,7 +290,9 @@ export class Axis<TDomain> {
     const geom = geometryFor(orientation, length, resolvedGridLength);
     const { values, positions, format } = computeTickData(scale, tickCount, tickFormat);
 
-    // 1) Gridlines first, so subsequent layers render on top of them.
+    // 1) Gridlines into the dedicated gridContainer. The chart adds that
+    //    container to a layer BEHIND its data, so gridlines never paint over
+    //    bars / areas / lines.
     if (showGrid) {
       for (const p of positions) {
         const g = new Graphics();
@@ -281,7 +303,7 @@ export class Axis<TDomain> {
           color: gridColor,
           width: GRID_LINE_WIDTH,
         });
-        this.container.addChild(g);
+        this.gridContainer.addChild(g);
       }
     }
 

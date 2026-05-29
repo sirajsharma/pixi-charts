@@ -45,12 +45,21 @@ type MockApplication = InstanceType<typeof Application> & {
 const MockApp = Application as unknown as { instances: MockApplication[] };
 
 /**
- * Concrete subclass for testing — records every call to `render()`.
+ * Concrete subclass for testing — records every call to `redrawData()` and
+ * stores the swapped data for `replaceData()` assertions.
  */
 class TestChart extends Chart {
   renderCalls = 0;
-  protected render(): void {
+  lastData: readonly Record<string, unknown>[] | undefined;
+  lastOptions: { animate?: boolean } | undefined;
+
+  protected redrawData(options?: { animate?: boolean }): void {
     this.renderCalls += 1;
+    this.lastOptions = options;
+  }
+
+  protected replaceData(newData: readonly Record<string, unknown>[]): void {
+    this.lastData = newData;
   }
 
   // Expose the protected `addTween` to tests.
@@ -251,5 +260,63 @@ describe('Chart — destroy()', () => {
     ro.trigger([]);
 
     expect(chart.renderCalls).toBe(0);
+  });
+});
+
+describe('Chart — update()', () => {
+  it('throws when called before init() has resolved', () => {
+    const container = makeContainer();
+    const chart = new TestChart({ container });
+    expect(() => chart.update([{ x: 1 }])).toThrow(/before init/);
+  });
+
+  it('is a silent no-op after destroy() — does not throw, does not redraw', async () => {
+    const container = makeContainer();
+    const chart = new TestChart({ container });
+    await chart.init();
+    chart.destroy();
+
+    const renderCallsBefore = chart.renderCalls;
+    expect(() => chart.update([{ x: 1 }])).not.toThrow();
+    expect(chart.renderCalls).toBe(renderCallsBefore);
+    expect(chart.lastData).toBeUndefined();
+  });
+
+  it('calls replaceData with the new data and then drives a redrawData pass', async () => {
+    const container = makeContainer();
+    const chart = new TestChart({ container });
+    await chart.init();
+
+    const renderCallsBefore = chart.renderCalls;
+    const data = [{ x: 1 }, { x: 2 }];
+    chart.update(data);
+
+    expect(chart.lastData).toBe(data);
+    expect(chart.renderCalls).toBe(renderCallsBefore + 1);
+  });
+
+  it('preserves the PIXI Application instance across update() calls', async () => {
+    const container = makeContainer();
+    const chart = new TestChart({ container });
+    await chart.init();
+
+    const appBefore = MockApp.instances[0]!;
+    chart.update([{ x: 1 }]);
+    chart.update([{ x: 2 }]);
+
+    expect(MockApp.instances).toHaveLength(1);
+    expect(MockApp.instances[0]).toBe(appBefore);
+  });
+
+  it('forwards UpdateOptions to redrawData and clears them between calls', async () => {
+    const container = makeContainer();
+    const chart = new TestChart({ container });
+    await chart.init();
+
+    chart.update([{ x: 1 }], { animate: true });
+    expect(chart.lastOptions).toEqual({ animate: true });
+
+    chart.update([{ x: 2 }]);
+    expect(chart.lastOptions).toBeUndefined();
   });
 });

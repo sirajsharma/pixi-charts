@@ -385,6 +385,62 @@ describe('Legend — update() mode switching', () => {
   });
 });
 
+describe('Legend — update() no-op short-circuit', () => {
+  it('does not destroy or recreate children when categorical items are unchanged', () => {
+    const legend = new Legend({ type: 'categorical', items: SAMPLE_ITEMS });
+
+    const builtGraphics = [...MockGraphics.instances];
+    const builtTexts = [...MockText.instances];
+    expect(builtGraphics).toHaveLength(SAMPLE_ITEMS.length);
+
+    // Pass a brand-new (but structurally identical) items array on update.
+    // The chart layer can't reuse the previous reference and the legend
+    // shouldn't require it.
+    legend.update({
+      type: 'categorical',
+      items: SAMPLE_ITEMS.map((i) => ({ ...i })),
+    });
+
+    for (const g of builtGraphics) expect(g.destroyed).toBe(false);
+    for (const t of builtTexts) expect(t.destroyed).toBe(false);
+    // No new Graphics/Text were allocated by the update.
+    expect(MockGraphics.instances).toHaveLength(builtGraphics.length);
+    expect(MockText.instances).toHaveLength(builtTexts.length);
+  });
+
+  it('rebuilds when a categorical item label or color changes', () => {
+    const legend = new Legend({ type: 'categorical', items: SAMPLE_ITEMS });
+    const builtGraphics = [...MockGraphics.instances];
+
+    legend.update({
+      type: 'categorical',
+      items: [...SAMPLE_ITEMS.slice(0, -1), { label: 'Delta', color: 0xabcdef }],
+    });
+
+    for (const g of builtGraphics) expect(g.destroyed).toBe(true);
+    expect(MockGraphics.instances.length).toBeGreaterThan(builtGraphics.length);
+  });
+
+  it('does not rebuild a continuous legend when the domain is unchanged', () => {
+    const legend = new Legend({ type: 'continuous', scheme: 'viridis', domain: [0, 100] });
+    const built = [...MockGraphics.instances];
+
+    legend.update({ type: 'continuous', scheme: 'viridis', domain: [0, 100] });
+
+    for (const g of built) expect(g.destroyed).toBe(false);
+    expect(MockGraphics.instances).toHaveLength(built.length);
+  });
+
+  it('rebuilds a continuous legend when the domain changes', () => {
+    const legend = new Legend({ type: 'continuous', scheme: 'viridis', domain: [0, 100] });
+    const built = [...MockGraphics.instances];
+
+    legend.update({ type: 'continuous', scheme: 'viridis', domain: [0, 200] });
+
+    for (const g of built) expect(g.destroyed).toBe(true);
+  });
+});
+
 describe('Legend — destroy()', () => {
   it('destroys all children and the container', () => {
     const legend = new Legend({ type: 'categorical', items: SAMPLE_ITEMS });
