@@ -678,6 +678,12 @@ export class ScatterChart extends Chart {
    * @internal
    */
   private buildSizeScale(): (row: Record<string, unknown>) => number {
+    // Fixed override wins — disables size encoding too. Lets dense scatters
+    // use uniform small markers so density emerges from overlap.
+    const fixed = this.spec.options?.pointRadius;
+    if (fixed !== undefined && Number.isFinite(fixed) && fixed > 0) {
+      return () => fixed;
+    }
     const sizeField = this.spec.encoding.size?.field;
     if (sizeField === undefined) return () => DEFAULT_RADIUS;
 
@@ -845,16 +851,21 @@ export class ScatterChart extends Chart {
     const enter = this.spec.animation?.enter ?? true;
     const animate = enter !== false && !this.didInitialRender;
     const enterOptions = typeof enter === 'object' ? enter : {};
+    const targetAlpha = (() => {
+      const a = this.spec.options?.pointAlpha;
+      if (a === undefined || !Number.isFinite(a)) return 1;
+      return Math.max(0, Math.min(1, a));
+    })();
 
     if (!animate) {
-      pc.alpha = 1;
+      pc.alpha = targetAlpha;
       return;
     }
 
     pc.alpha = 0;
     const tweenOpts: Parameters<typeof tween>[1] = {
       onUpdate: (p) => {
-        pc.alpha = p;
+        pc.alpha = p * targetAlpha;
       },
     };
     if (enterOptions.duration !== undefined) tweenOpts.duration = enterOptions.duration;

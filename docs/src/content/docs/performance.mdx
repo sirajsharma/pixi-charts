@@ -1,88 +1,95 @@
 ---
 title: Performance
-description: Live performance demonstration of pixi-charts rendering large datasets at 60fps, with a side-by-side comparison against Chart.js.
+description: Live streaming benchmarks for pixi-charts, with an honest cold-start breakout and a side-by-side comparison against Chart.js.
 ---
 
 import { PerfHero } from '../../components/perf/PerfHero';
 import { PerfComparison } from '../../components/perf/PerfComparison';
-import { SpecBlock } from '../../components/SpecBlock';
-import { makePerfScatterSpec } from '../../examples/perf-scatter';
+import { ColdStartBreakout } from '../../components/perf/ColdStartBreakout';
 
-pixi-charts renders 100,000+ data points at 60 frames per second on commodity hardware. Try it — pick a point count and watch the FPS counter.
+pixi-charts is built for interactive and streaming visualization of large datasets. This page
+demonstrates that with live measurements you can verify on your own hardware. Static one-shot
+rendering — drawing a chart once and never touching it again — is not where this library shines;
+for that, a simpler Canvas or SVG library may be a better fit. What you should care about here
+is per-frame update cost, and that is what the demos below measure.
+
+## The streaming demo
 
 <PerfHero client:only="react" />
 
-## Why this matters
-
-A user-signup dashboard at minute granularity over the last 90 days is roughly 130,000 points. A
-day of sensor telemetry sampled once per second is 86,400 points. An event log from an A/B test
-is millions of rows. Dataset sizes have grown faster than the charting libraries most teams
-reach for were designed to handle.
-
-SVG-based charting libraries create one DOM node per data point. The browser was not built to
-keep tens of thousands of `<circle>` elements layouted, painted, and hit-tested at 60fps —
-because for most of the history of charting libraries, nobody asked it to. pixi-charts targets
-the size of dataset you actually have today.
-
-The pixels are drawn with WebGL through PixiJS: 100,000 points become a single batched draw
-call. Hit-testing for hover and tooltips runs through d3-quadtree, which gives O(log n)
-nearest-neighbor queries no matter how large the cloud gets. Math stays on D3 — the library
-the rest of the data-vis ecosystem already trusts for scales, palettes, and downsampling. The
-end result is a chart that gets out of the way and lets the data scale up.
+New points stream in at a constant rate; the oldest fall off the left as the window slides. The
+overlay shows two numbers: the wall time of each `chart.update()` call, and the throughput-derived
+FPS (`1000 ÷ mean update time`, uncapped — on a 120 Hz or 144 Hz display you'll see numbers above 60 when pixi-charts has headroom to spare). Both numbers
+update twice a second so they stay readable. Toggle the stream off and on, switch window sizes,
+or regenerate the buffer to see how your hardware handles it.
 
 ## Compared to Chart.js
 
 <PerfComparison client:only="react" />
 
-Drag the slider through the range. The two render-time numbers tell most of the story: pixi-charts
-pays a fixed WebGL setup cost on the first frame, then scales sub-linearly with point count;
-Chart.js has effectively no setup cost but its per-point draw time adds up. By 100,000 points the
-gap is wide enough that you can feel it in the slider's responsiveness, not just read it in
-milliseconds.
+Toggle between libraries and try the same window size on each — the readout under the chart
+remembers the other library's last measurement so you can compare without rendering them at
+the same time. Running them simultaneously would be unfair to the faster one: JavaScript is
+single-threaded, so a 900ms `chart.update()` call on the slower library blocks the main thread
+for everyone, including the faster library's rAF callbacks. Visually they'd appear to update
+in lockstep even though each library's own per-update time differs by orders of magnitude.
 
-Chart.js was chosen over an SVG library on purpose: both libraries paint to a canvas / GPU
-surface, so the comparison isolates rendering architecture (batched WebGL sprites vs. per-point
-Canvas draw calls) rather than the SVG-vs-Canvas axis. It is also the most-downloaded charting
-library on npm, and the one readers most naturally want to compare against.
+Both libraries receive the same window of points each frame and run with the same minimal
+configuration: animations off, tooltips off, axes hidden, plasma color by x-position, small
+point radius. The per-update milliseconds in the overlay are the throughput number; the FPS
+is its inverse (`1000 ÷ updateMs`), uncapped so the readout shows each library's true ceiling
+rather than the display's refresh rate. At small window sizes (around 1k) both libraries paint
+well within a frame, but the per-update numbers — and therefore the FPS readouts — already
+differ by an order of magnitude. pixi-charts batches all points into a single tinted draw call
+while Chart.js styles and paints each point individually. Past a few thousand points the gap
+crosses the display budget and Chart.js's frame rate drops visibly while pixi-charts continues
+to update faster than the screen can show. By 100k Chart.js takes most of a second per update
+and feels frozen, while pixi-charts still updates around twenty times a second. The shape of
+the comparison is consistent across hardware — exact crossover points vary with your GPU and
+CPU.
 
-## Architecture
+Chart.js was chosen as the comparison because it's the most-downloaded charting library on npm
+and, like pixi-charts, paints to a canvas/GPU surface — so the comparison isolates rendering
+architecture (batched WebGL sprites vs. per-point Canvas draws) rather than the SVG-vs-Canvas
+axis.
 
-The library splits cleanly along a single seam: **D3 does math, PixiJS does pixels**. D3's
-submodules supply scales, color schemes, the quadtree spatial index, and (for line/area)
-LTTB downsampling. PixiJS turns the resulting numbers into GPU primitives — `ParticleContainer`
-for scatter clouds, `Graphics` for axes and lines — so each chart type renders through one or
-two batched draw calls regardless of the row count.
+## Cold start vs warm update
 
-Every chart accepts the same [`ChartSpec`](/api/interfaces/chartspec/) shape — `{ type, data, encoding, options, animation }` —
-and dispatches through a single entry point, [`render`](/api/functions/render/):
+<ColdStartBreakout client:only="react" />
 
-```ts
-import { render } from 'pixi-charts';
+Creating a WebGL chart has a one-time setup cost: initializing the GL context and compiling
+shaders takes a few hundred milliseconds on typical hardware. After that, each update lands in
+single-digit milliseconds. The warm-update number above should match the per-frame update time
+the streaming demo is showing at 10k points — if it doesn't, the chart is doing something it
+shouldn't, and that's a bug to file.
 
-const chart = await render(spec, document.getElementById('chart'));
-// ... later
-chart.destroy();
-```
+Cold start is a real cost. It is paid once per chart instance, not once per frame. If your use
+case is "draw a small chart once and never touch it again", the cold-start number dominates and
+a simpler library is probably the better fit. If your use case is anything interactive — drilling
+in, panning, streaming, hovering, recoloring — the warm-update number is what determines whether
+the chart feels good, and that is what this library is built for.
 
-The lifecycle is deliberately explicit on the returned [`Chart`](/api/classes/chart/) instance. Constructors do nothing observable — no PIXI, no DOM,
-no async work. `init()` creates the `Application` and runs the first render; `destroy()` is the
-single drain that cancels tweens, disconnects the resize observer, destroys the PIXI app, and
-removes the canvas. There is no global state: every chart owns its own application instance,
-its own ticker subscriptions, and its own DOM listeners, which is what makes the comparison
-above safe to mount two of side by side.
+## How this works
 
-A few more architectural choices that earn their keep at scale: animations short-circuit on
-`prefers-reduced-motion: reduce`; the published bundle is ESM-only (PixiJS v8 is ESM-only, and
-emitting a CJS entry would ship a broken module); D3 is imported by submodule rather than the
-umbrella package so the tree-shaker can drop what the chart you actually instantiated does not
-need.
+Three architectural choices drive the streaming throughput:
+
+1. **Batched draw calls via PixiJS.** All scatter points share a single texture inside a
+   [`ParticleContainer`](https://pixijs.com/), so 100k points cost roughly the same to render
+   as 1k — one GPU draw call, not one per point.
+2. **`update()` reuses the GL context.** The cold-start cost — context creation, shader
+   compilation, particle texture upload — is paid once when the chart is first rendered.
+   `chart.update(newData)` keeps the existing context, the existing texture, the existing
+   particle container, and rewrites the buffer contents. That's why the streaming demo's
+   per-update time is a small fraction of the cold-start time.
+3. **Quadtree hit-testing.** Hover and click lookups go through
+   [`d3-quadtree`](https://github.com/d3/d3-quadtree), giving O(log n) nearest-point queries no
+   matter how large the cloud gets. Tooltips work on 100k points without falling back to brute
+   force.
 
 ## Try it
 
-Below is the exact spec that drives the hero demo at 10,000 points — same shape used at every
-scale. The API surface does not change between 1k and 500k; pass a bigger array, get a bigger
-chart.
-
-<SpecBlock spec={makePerfScatterSpec(10_000)} dataPreview={3} />
+The streaming demo's API is the same `render(spec, container)` entry point as every other chart
+on the site — see [Getting Started](/getting-started/) and the gallery for line, area, bar,
+heatmap, and pie. The same `chart.update()` path used by this page drives every chart type.
 
 <a href="/getting-started/" class="cta-link">Get started →</a>

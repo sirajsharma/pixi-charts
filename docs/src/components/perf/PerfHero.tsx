@@ -1,71 +1,118 @@
-import { useCallback, useMemo, useState } from 'react';
-import type { ChartSpec } from 'pixi-charts';
-import { LiveChart } from '../LiveChart';
-import { makePerfScatterSpec } from '../../examples/perf-scatter';
-import { useFpsCounter } from './useFpsCounter';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { PerfStreamingChart, type PerfStreamingChartHandle } from './PerfStreamingChart';
+import { StreamGenerator, type StreamPoint } from './streamGenerator';
+import { useRollingMetrics, useStreamLoop } from './useStreamLoop';
 
-const PRESETS = [1_000, 10_000, 100_000, 500_000] as const;
-type Preset = (typeof PRESETS)[number];
+const PRESETS = [
+  { value: 1_000, label: '1k', large: false },
+  { value: 5_000, label: '5k', large: false },
+  { value: 10_000, label: '10k', large: false },
+  { value: 50_000, label: '50k', large: true },
+  { value: 100_000, label: '100k', large: true },
+] as const;
 
-const formatCount = (n: number): string => {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(0)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
-  return String(n);
-};
+const POINTS_PER_FRAME = 100;
+const DEFAULT_WINDOW = 10_000;
+
+/**
+ * One-off generator used by the Regenerate button so it doesn't disturb
+ * the stream-loop's PRNG state. Seeded from current time so successive
+ * clicks give different windows.
+ */
+function regenWindow(n: number): StreamPoint[] {
+  const gen = new StreamGenerator({ seed: (Date.now() | 0) >>> 0 || 1 });
+  return gen.nextBatch(n);
+}
 
 export function PerfHero() {
-  const [points, setPoints] = useState<Preset>(10_000);
-  const [renderMs, setRenderMs] = useState<number | null>(null);
-  const fps = useFpsCounter();
+  const [windowSize, setWindowSize] = useState<number>(DEFAULT_WINDOW);
+  const [streaming, setStreaming] = useState(true);
+  const chartRef = useRef<PerfStreamingChartHandle>(null);
+  const metrics = useRollingMetrics();
 
-  const spec = useMemo<ChartSpec>(() => makePerfScatterSpec(points), [points]);
+  // Fresh initial window every time the size changes. Identity change here
+  // forces PerfStreamingChart to tear down and recreate its chart with the
+  // new point count.
+  const initialData = useMemo<readonly StreamPoint[]>(() => regenWindow(windowSize), [windowSize]);
 
-  const handleReady = useCallback((durationMs: number) => {
-    setRenderMs(durationMs);
-  }, []);
+  const handleTick = useCallback(
+    (window: readonly StreamPoint[]) => {
+      const ms = chartRef.current?.update(window);
+      if (ms !== null && ms !== undefined) metrics.push(ms);
+    },
+    [metrics],
+  );
 
-  const handlePreset = (n: Preset) => {
-    if (n === points) return;
-    setRenderMs(null);
-    setPoints(n);
-  };
+  useStreamLoop({
+    running: streaming,
+    windowSize,
+    pointsPerFrame: POINTS_PER_FRAME,
+    onTick: handleTick,
+  });
+
+  const handleRegenerate = useCallback(() => {
+    const ms = chartRef.current?.update(regenWindow(windowSize));
+    if (ms !== null && ms !== undefined) metrics.push(ms);
+  }, [windowSize, metrics]);
 
   return (
     <div className="perf-hero">
-      <div className="perf-presets" role="group" aria-label="Point count">
-        {PRESETS.map((n) => (
+      <div className="perf-stream-controls">
+        <div className="perf-presets" role="group" aria-label="Window size">
+          {PRESETS.map((preset) => (
+            <button
+              key={preset.value}
+              type="button"
+              className="perf-preset"
+              data-large={preset.large ? 'true' : undefined}
+              aria-pressed={windowSize === preset.value}
+              onClick={() => {
+                setWindowSize(preset.value);
+              }}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <div className="perf-stream-actions">
           <button
-            key={n}
             type="button"
             className="perf-preset"
-            aria-pressed={n === points}
+            aria-pressed={streaming}
             onClick={() => {
-              handlePreset(n);
+              setStreaming((s) => !s);
             }}
           >
-            {formatCount(n)}
+            {streaming ? '■ Stop' : '▶ Stream'}
           </button>
-        ))}
-      </div>
-      <div className="perf-chart-wrap">
-        <LiveChart
-          key={points}
-          spec={spec}
-          height={600}
-          ariaLabel={`Scatter plot of ${points.toLocaleString()} uniform-random points`}
-          onReady={handleReady}
-        />
-        <div className="perf-overlay" aria-live="polite">
-          <span className="perf-overlay-fps">{fps} fps</span>
-          <span className="perf-overlay-sep">·</span>
-          <span className="perf-overlay-rt">
-            {renderMs === null ? '— ms' : `${renderMs.toFixed(0)} ms`}
-          </span>
+          <button
+            type="button"
+            className="perf-preset"
+            onClick={handleRegenerate}
+            aria-label="Regenerate window with fresh data"
+          >
+            ↻ Regenerate
+          </button>
         </div>
       </div>
+
+      <div className="perf-chart-wrap">
+        <PerfStreamingChart
+          ref={chartRef}
+          initialData={initialData}
+          height={500}
+          ariaLabel="Streaming scatter chart rendered with pixi-charts"
+        />
+        <div className="perf-overlay" aria-live="polite">
+          <span className="perf-overlay-fps">{metrics.fps.toFixed(1)} fps</span>
+          <span className="perf-overlay-sep">·</span>
+          <span>{metrics.updateMs.toFixed(1)} ms / update</span>
+        </div>
+      </div>
+
       <p className="perf-note">
-        Performance depends on your device&apos;s GPU. Try the presets to see how your hardware
-        handles different point counts — the FPS counter shows the truth, whatever it is.
+        Streaming {POINTS_PER_FRAME} points / frame. Window: {windowSize.toLocaleString()} points.
+        Numbers reflect your hardware — yours, not ours.
       </p>
     </div>
   );

@@ -1,114 +1,232 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ChartJsStreamingScatter,
+  type ChartJsStreamingScatterHandle,
+} from './ChartJsStreamingScatter';
+import { PerfStreamingChart, type PerfStreamingChartHandle } from './PerfStreamingChart';
+import { StreamGenerator, type StreamPoint } from './streamGenerator';
+import { useRollingMetrics } from './useStreamLoop';
 
-import type { ChartSpec } from 'pixi-charts';
-import { LiveChart } from '../LiveChart';
-import { ChartJsScatter } from './ChartJsScatter';
-import { makePerfData, makePerfScatterSpec, type PerfPoint } from '../../examples/perf-scatter';
-import { useFpsCounter } from './useFpsCounter';
+const PRESETS = [
+  { value: 1_000, label: '1k', large: false },
+  { value: 5_000, label: '5k', large: false },
+  { value: 10_000, label: '10k', large: false },
+  { value: 50_000, label: '50k', large: true },
+  { value: 100_000, label: '100k', large: true },
+] as const;
 
-const STEPS = [1_000, 5_000, 10_000, 25_000, 50_000, 100_000] as const;
+const POINTS_PER_FRAME = 100;
+const DEFAULT_WINDOW = 10_000;
 
-const formatCount = (n: number): string => (n >= 1_000 ? `${(n / 1_000).toFixed(0)}k` : String(n));
+type Library = 'pixi' | 'chartjs';
+
+interface Measurement {
+  fps: number;
+  updateMs: number;
+}
+
+type MeasurementMap = Record<Library, Partial<Record<number, Measurement>>>;
+
+function regenWindow(n: number): StreamPoint[] {
+  const gen = new StreamGenerator({ seed: (Date.now() | 0) >>> 0 || 1 });
+  return gen.nextBatch(n);
+}
+
+function libraryLabel(lib: Library): string {
+  return lib === 'pixi' ? 'pixi-charts' : 'Chart.js';
+}
 
 export function PerfComparison() {
-  const [stepIndex, setStepIndex] = useState(2); // default to 10k
-  const [debouncedIndex, setDebouncedIndex] = useState(2);
-  const [pixiRenderMs, setPixiRenderMs] = useState<number | null>(null);
-  const [chartJsRenderMs, setChartJsRenderMs] = useState<number | null>(null);
-  const fps = useFpsCounter();
+  const [library, setLibrary] = useState<Library>('pixi');
+  const [windowSize, setWindowSize] = useState<number>(DEFAULT_WINDOW);
+  const [streaming, setStreaming] = useState(true);
+  const [lastMeasurements, setLastMeasurements] = useState<MeasurementMap>({
+    pixi: {},
+    chartjs: {},
+  });
 
+  const pixiRef = useRef<PerfStreamingChartHandle>(null);
+  const cjsRef = useRef<ChartJsStreamingScatterHandle>(null);
+  const metrics = useRollingMetrics();
+
+  // Refs let the rAF loop and the persistence effect read the active state
+  // without re-creating themselves every render — see comments at each use.
+  const metricsRef = useRef(metrics);
+  metricsRef.current = metrics;
+  const libraryRef = useRef(library);
+  libraryRef.current = library;
+  const windowSizeRef = useRef(windowSize);
+  windowSizeRef.current = windowSize;
+
+  const initialData = useMemo<readonly StreamPoint[]>(() => regenWindow(windowSize), [windowSize]);
+
+  // Snapshot every new throttled reading into the per-(library, windowSize)
+  // map so the readout under the chart can report the other library's most
+  // recent observed numbers. Reads library/windowSize through refs because
+  // we don't want a chip swap to overwrite the new bucket with the stale
+  // reading from the just-departed configuration. Guard on updateMs > 0 so
+  // the post-reset {0, 60} default doesn't smash valid history.
   useEffect(() => {
-    const t = window.setTimeout(() => {
-      setDebouncedIndex(stepIndex);
-    }, 150);
-    return () => {
-      window.clearTimeout(t);
+    if (metrics.updateMs <= 0) return;
+    const lib = libraryRef.current;
+    const size = windowSizeRef.current;
+    const sample: Measurement = { fps: metrics.fps, updateMs: metrics.updateMs };
+    setLastMeasurements((prev) => ({
+      ...prev,
+      [lib]: { ...prev[lib], [size]: sample },
+    }));
+  }, [metrics.fps, metrics.updateMs]);
+
+  // Reset the rolling metrics when swapping library or window size so the
+  // overlay briefly shows "—" rather than the previous configuration's
+  // residual mean bleeding into the new chart's first half-second.
+  useEffect(() => {
+    metricsRef.current.reset();
+  }, [library, windowSize]);
+
+  // Single rAF chain — only one chart is alive at a time, so loop coupling
+  // (the bug the prior side-by-side version had) is structurally impossible.
+  // The producer rAF maintains the rolling window; the consumer rAF reads
+  // the active ref through libraryRef so a library toggle doesn't need to
+  // restart the loop. The chart components mount/unmount under React's
+  // commit phase: by the time the next consumer tick runs, the new ref is
+  // populated (useLayoutEffect on the child runs synchronously after commit).
+  useEffect(() => {
+    if (!streaming) return undefined;
+
+    const gen = new StreamGenerator({ seed: 1 });
+    let currentWindow: readonly StreamPoint[] = initialData;
+
+    let producerRaf = 0;
+    const produce = () => {
+      const batch = gen.nextBatch(POINTS_PER_FRAME);
+      currentWindow = [...currentWindow.slice(POINTS_PER_FRAME), ...batch];
+      producerRaf = requestAnimationFrame(produce);
     };
-  }, [stepIndex]);
+    producerRaf = requestAnimationFrame(produce);
 
-  const points = STEPS[debouncedIndex] ?? 10_000;
+    let consumerRaf = 0;
+    const consume = () => {
+      consumerRaf = requestAnimationFrame(consume);
+      const ref = libraryRef.current === 'pixi' ? pixiRef.current : cjsRef.current;
+      const ms = ref?.update(currentWindow);
+      if (ms !== null && ms !== undefined) metricsRef.current.push(ms);
+    };
+    consumerRaf = requestAnimationFrame(consume);
 
-  // Single dataset shared between both libraries — fairness invariant.
-  const data: readonly PerfPoint[] = useMemo(() => makePerfData(points), [points]);
-  const spec: ChartSpec = useMemo(() => makePerfScatterSpec(points, data), [points, data]);
+    return () => {
+      if (producerRaf !== 0) cancelAnimationFrame(producerRaf);
+      if (consumerRaf !== 0) cancelAnimationFrame(consumerRaf);
+    };
+  }, [streaming, initialData]);
 
-  const handlePixiReady = useCallback((ms: number) => {
-    setPixiRenderMs(ms);
-  }, []);
-  const handleChartJsReady = useCallback((ms: number) => {
-    setChartJsRenderMs(ms);
-  }, []);
+  const otherLibrary: Library = library === 'pixi' ? 'chartjs' : 'pixi';
+  const otherMeasurement = lastMeasurements[otherLibrary][windowSize];
+  const currentHasReading = metrics.updateMs > 0;
+  const sizeLabel = windowSize.toLocaleString();
 
   return (
     <div className="perf-cmp">
-      <div className="perf-cmp-controls">
-        <label htmlFor="perf-cmp-slider" className="perf-cmp-label">
-          Points: <span className="perf-cmp-count">{formatCount(points)}</span>
-        </label>
-        <input
-          id="perf-cmp-slider"
-          type="range"
-          min={0}
-          max={STEPS.length - 1}
-          step={1}
-          value={stepIndex}
-          onChange={(e) => {
-            setStepIndex(Number(e.target.value));
-          }}
-          aria-valuetext={`${formatCount(points)} points`}
-        />
-        <div className="perf-cmp-ticks" aria-hidden="true">
-          {STEPS.map((n) => (
-            <span key={n}>{formatCount(n)}</span>
+      <div className="perf-stream-controls">
+        <div className="perf-presets" role="group" aria-label="Library">
+          <button
+            type="button"
+            className="perf-preset"
+            aria-pressed={library === 'pixi'}
+            onClick={() => {
+              setLibrary('pixi');
+            }}
+          >
+            pixi-charts
+          </button>
+          <button
+            type="button"
+            className="perf-preset"
+            aria-pressed={library === 'chartjs'}
+            onClick={() => {
+              setLibrary('chartjs');
+            }}
+          >
+            Chart.js
+          </button>
+        </div>
+        <div className="perf-presets" role="group" aria-label="Window size">
+          {PRESETS.map((preset) => (
+            <button
+              key={preset.value}
+              type="button"
+              className="perf-preset"
+              data-large={preset.large ? 'true' : undefined}
+              aria-pressed={windowSize === preset.value}
+              onClick={() => {
+                setWindowSize(preset.value);
+              }}
+            >
+              {preset.label}
+            </button>
           ))}
+        </div>
+        <div className="perf-stream-actions">
+          <button
+            type="button"
+            className="perf-preset"
+            aria-pressed={streaming}
+            onClick={() => {
+              setStreaming((s) => !s);
+            }}
+          >
+            {streaming ? '■ Stop' : '▶ Stream'}
+          </button>
         </div>
       </div>
 
-      <div className="perf-cmp-grid">
-        <div className="perf-cmp-col">
-          <div className="perf-cmp-col-head">
-            <span className="perf-cmp-col-title">pixi-charts</span>
-            <span className="perf-cmp-col-tag perf-cmp-tag-good">WebGL</span>
-          </div>
-          <LiveChart
-            key={`pixi-${String(points)}`}
-            spec={spec}
-            height={420}
-            ariaLabel={`pixi-charts scatter plot of ${points.toLocaleString()} points`}
-            onReady={handlePixiReady}
+      <div className="perf-chart-wrap">
+        {library === 'pixi' ? (
+          <PerfStreamingChart
+            ref={pixiRef}
+            initialData={initialData}
+            height={540}
+            ariaLabel={`pixi-charts streaming scatter, ${sizeLabel} points`}
           />
-          <div className="perf-cmp-stats">
-            <span>{fps} fps</span>
-            <span className="perf-overlay-sep">·</span>
-            <span>render {pixiRenderMs === null ? '—' : pixiRenderMs.toFixed(0)} ms</span>
-          </div>
+        ) : (
+          <ChartJsStreamingScatter
+            ref={cjsRef}
+            initialData={initialData}
+            height={540}
+            ariaLabel={`Chart.js streaming scatter, ${sizeLabel} points`}
+          />
+        )}
+        <div className="perf-overlay" aria-live="polite">
+          <span className="perf-overlay-fps">
+            {currentHasReading ? metrics.fps.toFixed(1) : '—'} fps
+          </span>
+          <span className="perf-overlay-sep">·</span>
+          <span>{currentHasReading ? `${metrics.updateMs.toFixed(1)} ms` : '— ms'}</span>
         </div>
+      </div>
 
-        <div className="perf-cmp-col">
-          <div className="perf-cmp-col-head">
-            <span className="perf-cmp-col-title">Chart.js</span>
-            <span className="perf-cmp-col-tag">Canvas</span>
-          </div>
-          <ChartJsScatter
-            key={`cjs-${String(points)}`}
-            data={data}
-            height={420}
-            ariaLabel={`Chart.js scatter plot of ${points.toLocaleString()} points`}
-            onReady={handleChartJsReady}
-          />
-          <div className="perf-cmp-stats">
-            <span>{fps} fps</span>
-            <span className="perf-overlay-sep">·</span>
-            <span>render {chartJsRenderMs === null ? '—' : chartJsRenderMs.toFixed(0)} ms</span>
-          </div>
-        </div>
+      <div className="perf-other-readout" aria-live="polite">
+        {otherMeasurement ? (
+          <>
+            Last {libraryLabel(otherLibrary)} reading at {sizeLabel}:{' '}
+            <strong>{otherMeasurement.fps.toFixed(1)} fps</strong>
+            <span className="perf-overlay-sep"> · </span>
+            {otherMeasurement.updateMs.toFixed(1)} ms/update
+          </>
+        ) : (
+          <>
+            No {libraryLabel(otherLibrary)} reading at {sizeLabel} yet — toggle to{' '}
+            {libraryLabel(otherLibrary)} to capture one.
+          </>
+        )}
       </div>
 
       <p className="perf-cmp-fineprint">
-        Both charts render the same dataset, drawn from a uniform-random distribution. Animations,
-        tooltips, axes, and legends are disabled on both libraries so the comparison reflects raw
-        render speed. FPS is page-wide — both charts share the same frame budget — so the per-chart
-        differentiator at high point counts is the render-time number.
+        Each library runs alone — the prior side-by-side version coupled them through the main
+        thread, dragging pixi-charts' visible cadence down to Chart.js's at large window sizes.
+        Toggle between libraries to see each one's true throughput at the same window size; the
+        readout above shows the other library's most recent measurement at that size. The overlay
+        reports throughput (1000 ÷ mean update time) and the per-update wall time.
       </p>
     </div>
   );

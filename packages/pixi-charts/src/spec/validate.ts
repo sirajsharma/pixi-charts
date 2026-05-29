@@ -86,6 +86,10 @@ const chartOptionsSchema = z.object({
   // on non-pie specs that may set them speculatively.
   innerRadius: z.union([z.number(), z.nan()]).optional(),
   startAngle: z.union([z.number(), z.nan()]).optional(),
+  // Scatter-only fields, mirroring the orientation/innerRadius pattern:
+  // shape-validated for every spec, silently ignored on non-scatter types.
+  pointRadius: z.number().optional(),
+  pointAlpha: z.number().optional(),
   // Axis-rendering options. Inert on `pie` (no axes / no grid); shape is
   // validated for every spec but the per-type rules below do not consult
   // them. Empty title strings parse successfully; an over-long title (>100

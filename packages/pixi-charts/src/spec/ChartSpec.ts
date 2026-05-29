@@ -189,6 +189,24 @@ export interface ChartOptions {
    */
   startAngle?: number;
   /**
+   * Fixed point radius in CSS pixels for `type: 'scatter'`. When set,
+   * overrides both the default `4px` and any `size` encoding — every point
+   * renders at the same radius. Useful for dense scatters where you want
+   * small, uniformly-sized markers so density emerges from overlap rather
+   * than per-point size variation.
+   *
+   * Ignored by non-scatter chart types; the validator does not warn.
+   */
+  pointRadius?: number;
+  /**
+   * Particle alpha in `[0, 1]` for `type: 'scatter'`. When set, multiplies
+   * the rendered alpha of the entire point cloud so overlapping points
+   * accumulate visually into a density gradient. Default `1`.
+   *
+   * Ignored by non-scatter chart types; the validator does not warn.
+   */
+  pointAlpha?: number;
+  /**
    * Whether to render axis chrome (axis line, tick marks, tick labels, and
    * axis title). Default: `true`. Set to `false` for sparkline embeds, hero
    * charts, and other decorative chart instances that should render without
