@@ -20,6 +20,19 @@ interface Props {
   /** Container pixel height. */
   height?: number;
   ariaLabel?: string;
+  /**
+   * Build the chart spec from the current data + theme. Defaults to the
+   * perf-page's `makeStreamingSpec` (plasma by x, no chrome, point r=1.5,
+   * alpha 0.4). The landing-page hero overrides this to tune point size,
+   * alpha, or color encoding for the background-motion use case.
+   */
+  specBuilder?: (data: readonly StreamPoint[], theme: Theme) => ChartSpec;
+  /**
+   * Show the "Booting WebGL…" placeholder during the ~400ms cold start.
+   * Defaults to true (perf-page demo). The hero sets this to false so the
+   * placeholder text doesn't bleed through its gradient overlay.
+   */
+  showPlaceholder?: boolean;
 }
 
 export interface PerfStreamingChartHandle {
@@ -79,7 +92,13 @@ function makeStreamingSpec(data: readonly StreamPoint[], theme: Theme): ChartSpe
  */
 export const PerfStreamingChart = forwardRef<PerfStreamingChartHandle, Props>(
   function PerfStreamingChart(
-    { initialData, height = 500, ariaLabel = 'pixi-charts scatter stream' },
+    {
+      initialData,
+      height = 500,
+      ariaLabel = 'pixi-charts scatter stream',
+      specBuilder = makeStreamingSpec,
+      showPlaceholder = true,
+    },
     ref,
   ) {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -106,8 +125,8 @@ export const PerfStreamingChart = forwardRef<PerfStreamingChartHandle, Props>(
     // window-size changes from the parent) and theme. Building the spec is
     // cheap; this memo just keeps the object stable per render.
     const spec = useMemo<ChartSpec>(
-      () => makeStreamingSpec(initialData, theme),
-      [initialData, theme],
+      () => specBuilder(initialData, theme),
+      [initialData, theme, specBuilder],
     );
 
     useLayoutEffect(() => {
@@ -166,7 +185,7 @@ export const PerfStreamingChart = forwardRef<PerfStreamingChartHandle, Props>(
           background: 'var(--sl-color-bg-nav, #0d1117)',
         }}
       >
-        {loading && !error && (
+        {loading && !error && showPlaceholder && (
           <div
             aria-hidden="true"
             style={{

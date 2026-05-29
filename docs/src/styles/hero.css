@@ -27,6 +27,23 @@ body:has(.hero-fullbleed) main .sl-container {
   width: 100%;
 }
 
+/* The full-width .sl-container above is what lets the hero go edge-to-edge,
+   but its siblings (everything below the hero, plus Starlight's footer/
+   pagination) would otherwise inherit that full bleed. Re-constrain them
+   to the normal splash content-width so the page below the hero sits in
+   the usual reading column. */
+body:has(.hero-fullbleed) main .sl-markdown-content > *:not(.hero-fullbleed),
+body:has(.hero-fullbleed) main > .content-panel > .sl-container > footer {
+  max-width: var(--sl-content-width, 67.5rem);
+  margin-inline: auto;
+  padding-inline: var(--sl-content-pad-x, 1rem);
+}
+
+/* Breathing room between the hero and the first below-hero section. */
+body:has(.hero-fullbleed) .sl-markdown-content > #below-hero {
+  padding-block: 3rem;
+}
+
 .hero-fullbleed {
   position: relative;
   /* Parent (.sl-container) is forced to 100% width above, so this fills the
@@ -71,6 +88,7 @@ body:has(.hero-fullbleed) main .sl-container {
   );
   pointer-events: none;
   z-index: 1;
+  margin-top: 0;
 }
 
 .hero-text-overlay {
@@ -81,6 +99,7 @@ body:has(.hero-fullbleed) main .sl-container {
   max-width: 540px;
   z-index: 2;
   pointer-events: auto;
+  margin-top: 0;
 }
 
 .hero-text-overlay h1 {

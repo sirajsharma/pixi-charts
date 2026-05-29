@@ -4,12 +4,12 @@ description: A WebGL-rendered TypeScript charting library handling 100k+ points 
 template: splash
 ---
 
-import { HeroChart } from '../../components/HeroChart';
+import { StreamingHero } from '../../components/StreamingHero';
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <section class="hero-fullbleed">
   <div class="hero-chart-layer">
-    <HeroChart client:only="react" />
+    <StreamingHero client:only="react" />
   </div>
   <div class="hero-gradient-overlay"></div>
   <div class="hero-text-overlay">
