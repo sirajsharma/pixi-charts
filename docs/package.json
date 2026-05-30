@@ -8,7 +8,9 @@
     "start": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@astrojs/react": "^4.4.0",
@@ -24,8 +26,10 @@
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "happy-dom": "^15.7.4",
     "starlight-typedoc": "^0.23.0",
     "typedoc": "^0.28.19",
-    "typedoc-plugin-markdown": "^4.11.0"
+    "typedoc-plugin-markdown": "^4.11.0",
+    "vitest": "^2.1.3"
   }
 }

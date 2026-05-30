@@ -112,6 +112,13 @@ PRs that are docs-only, internal refactors with no API change, or test-only do n
 - **Public surface** — anything users should be able to import — flows through `packages/pixi-charts/src/index.ts`. If it isn't re-exported there, treat it as internal and refactor freely.
 - **TypeScript** — strict mode plus `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. If you need a type assertion, prefer narrowing.
 - **JSDoc** every public symbol. Internal symbols get a short comment only when the _why_ is non-obvious.
+- **Docs example specs** — every spec under `docs/src/examples/` is statically imported by `docs/tests/examples.test.ts`, validated, and rendered against a mocked PixiJS in CI. If you change the public API (rename a field on `ChartSpec`, drop a `FieldType`, etc.), update the affected example specs in the same PR or the docs build will fail. The harness is the regression guard against silent doc rot.
+
+## Verification needs adversarial inputs
+
+The unit-test harness uses well-behaved data: short labels, light backgrounds, center hovering, a single update. Real usage exercises edges — long category labels, dark themes, edge-of-container hovers, streaming updates, large datasets. Several rendering bugs (dark-mode label colors, label clipping, tooltip edge-clipping, gridline z-order) shipped through PRs whose unit tests passed because the harness data avoided the failure mode.
+
+Before any release, exercise the change against the adversarial cases, not just the happy-path demos. The docs site (run `pnpm --filter docs dev`) is the canonical stress harness: it renders every chart type with real data shapes, toggles light and dark themes, and surfaces console warnings live. If a feature can be broken by a long string, a dark background, a streaming update, or a hover at the edge of the container, that's what verification should look like — not "the unit test passed".
 
 ## Reporting issues
 

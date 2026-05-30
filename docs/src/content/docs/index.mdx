@@ -1,6 +1,6 @@
 ---
 title: Pixi Charts
-description: A WebGL-rendered TypeScript charting library handling 100k+ points at 60fps.
+description: A WebGL-rendered TypeScript charting library that renders tens of thousands of points at 60fps and stays interactive at 100k+ where Canvas-based libraries stall.
 template: splash
 ---
 
@@ -30,7 +30,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid>
 	<Card title="WebGL rendering" icon="rocket">
-		Render 100k+ data points at 60fps via PixiJS. SVG-based libraries fall over above 10k; pixi-charts is designed for the modern data scale.
+		Renders tens of thousands of points at 60fps via PixiJS and stays interactive at 100k+ where Canvas-based libraries stall. SVG-based libraries fall over above 10k; pixi-charts is built for the modern data scale.
 	</Card>
 	<Card title="Declarative spec" icon="document">
 		One JSON shape describes any chart. Same API for line, area, bar, scatter, heatmap, and pie. Trivially LLM-compatible.

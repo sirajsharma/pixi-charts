@@ -27,7 +27,7 @@ Walk through the footer checklist in a real browser — check tooltips, enter an
 Each page isolates one chart for deeper verification:
 
 - **`index.html` / `main.js`** — Line chart, basic time-series.
-- **`scatter-perf.html` / `scatter-perf.js`** — Scatter performance harness. Switchable 1k/10k/100k/1M point tiers. FPS meter and per-render wall-time display. Verifies the headline 100k-at-60fps claim and O(log n) hit-testing via d3-quadtree.
+- **`scatter-perf.html` / `scatter-perf.js`** — Scatter performance harness. Switchable 1k/10k/100k/1M point tiers. FPS meter and per-render wall-time display. Verifies the headline "interactive at the 100k-point regime" claim and O(log n) hit-testing via d3-quadtree.
 - **`heatmap.html` / `heatmap.js`** — Heatmap with a full 24×7 grid and a sparse variant (15% of cells omitted). Verifies cell rendering, the continuous color legend, and sparse-data transparency.
 - **`pie.html` / `pie.js`** — Pie and donut side by side. Verifies the transparent donut hole (striped page background intentionally shows through), the sweep enter animation, and hit-testing at cardinal positions.
 

@@ -26,9 +26,9 @@ yarn add pixi-charts pixi.js
 Every chart is described by a single [`ChartSpec`](/api/interfaces/chartspec/) value: declarative JSON that says *what* to render, not *how*. Pass it to [`render`](/api/functions/render/) along with the DOM element that should host the chart.
 
 ```ts
-import { render } from 'pixi-charts';
+import { render, type ChartSpec } from 'pixi-charts';
 
-const spec = {
+const spec: ChartSpec = {
   type: 'line',
   data: [
     { month: 'Jan', revenue: 12_400 },
@@ -43,6 +43,7 @@ const spec = {
 };
 
 const container = document.getElementById('chart');
+if (!container) throw new Error('Chart container #chart not found');
 const chart = await render(spec, container);
 
 // Later — e.g. when the component unmounts — clean up:
@@ -82,6 +83,7 @@ The chart sizes itself to the container's `clientWidth` × `clientHeight` and re
 
 ```ts
 const container = document.getElementById('chart');
+if (!container) throw new Error('Chart container #chart not found');
 container.style.width = '100%';
 container.style.height = '400px';
 await render(spec, container);
@@ -148,5 +150,5 @@ try {
 ## What's next
 
 - **[Chart Gallery](/charts/line/)** — every chart type with live examples and a per-chart encoding reference.
-- **[Performance](/performance/)** — the library handles 100k+ points at 60fps. See how, and how it compares to Chart.js.
+- **[Performance](/performance/)** — the library remains interactive at 100k+ points where Canvas-based libraries stall. See the live numbers, and how it compares to Chart.js.
 - **[API Reference](/api/)** — every type, every option, every method.

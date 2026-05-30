@@ -8,7 +8,7 @@ import { SpecBlock } from '../../../components/SpecBlock';
 import { scatterCategoricalSpec } from '../../../examples/scatter-categorical';
 import { scatterContinuousSpec } from '../../../examples/scatter-continuous';
 
-Scatter charts plot two quantitative variables as points — the most direct view of joint distribution, and pixi-charts' performance flagship: 100k+ points at 60fps via PixiJS `ParticleContainer`.
+Scatter charts plot two quantitative variables as points — the most direct view of joint distribution, and pixi-charts' performance flagship: built for the 100k-point regime via a single batched PixiJS `ParticleContainer` draw call, where per-point Canvas libraries become unresponsive.
 
 ## Categorical color
 
@@ -53,7 +53,7 @@ Reach for continuous color when the third variable is itself quantitative (eleva
 
 ## Notes
 
-- **Performance** — points render through a `ParticleContainer` in a single batched draw call. 100k+ points sustain 60fps on commodity hardware; see [/performance/](/performance/) for the demonstration.
+- **Performance** — points render through a `ParticleContainer` in a single batched draw call, which is what keeps streaming smooth at the 100k-point regime where per-point Canvas libraries become unresponsive. See [/performance/](/performance/) for live numbers.
 - **Hit-testing** — uses a d3-quadtree spatial index, so tooltips stay O(log n) per pointer move even at high point counts.
 - **Hover overlay** — the hover marker is a separate sprite drawn above the particle texture, so hover doesn't trigger a particle-buffer re-upload.
 - **Size scale** — radius scales with the square root of the size field; visual *area* tracks the data linearly. This is the convention readers expect; linear-radius scales misrepresent magnitude.

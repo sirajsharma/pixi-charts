@@ -124,10 +124,13 @@ export interface ScatterChartOptions {
 /**
  * Scatter plot — the library's performance flagship.
  *
- * Renders **100k+ points at 60fps** by drawing every point as a PixiJS v8
- * {@link Particle} in a single {@link ParticleContainer} (one batched draw
- * call), and answering pointer hit-tests in `O(log n)` via a
- * {@link SpatialIndex} (`d3-quadtree`) instead of a linear scan.
+ * Built for the **100k-point regime** via a single batched
+ * {@link ParticleContainer} draw call: every point is a PixiJS v8
+ * {@link Particle} sharing one tinted texture, so streaming stays smooth at
+ * scales where per-point Canvas libraries become unresponsive. Pointer
+ * hit-tests answer in `O(log n)` via a {@link SpatialIndex} (`d3-quadtree`)
+ * instead of a linear scan. See the [Performance page](https://pixicharts.com/performance/)
+ * for live numbers on commodity hardware.
  *
  * ## Architectural decisions
  *
