@@ -49,6 +49,10 @@ export default defineConfig({
             { label: 'Pie & Donut', link: '/charts/pie/' },
           ],
         },
+        {
+          label: 'Interactions',
+          items: [{ label: 'Drilldown', link: '/interactions/drilldown/' }],
+        },
         { label: 'Performance', link: '/performance/' },
         typeDocSidebarGroup,
       ],

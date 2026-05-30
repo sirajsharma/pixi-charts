@@ -1,5 +1,19 @@
 import { Container, type FederatedPointerEvent, Sprite, Texture } from 'pixi.js';
 
+/**
+ * Maximum distance (in plot-area-local pixels) between pointer-down and
+ * pointer-up for the gesture to count as a click. Beyond this, the
+ * pending click is suppressed — we read it as a drag.
+ */
+const CLICK_MAX_DISTANCE_PX = 5;
+
+/**
+ * Maximum duration (ms) between pointer-down and pointer-up for the
+ * gesture to count as a click. Beyond this, the pending click is
+ * suppressed — we read it as a long press.
+ */
+const CLICK_MAX_DURATION_MS = 500;
+
 /** A 2D coordinate. Used for both plot-area-local and page-global positions. */
 export interface Point {
   x: number;
@@ -83,11 +97,26 @@ export interface InteractionLayerOptions<D> {
 }
 
 /** @internal */
-type PointerKind = 'move' | 'down' | 'leave';
+type PointerKind = 'move' | 'down' | 'up' | 'leave';
 
-/** @internal — mutable state for hover deduplication. */
+/**
+ * Mutable state recorded on a primary pointerdown over a datum, used to
+ * decide whether the matching pointerup is a click or a drag.
+ * @internal
+ */
+interface PendingClick<D> {
+  /** Plot-area-local position of the pointerdown. */
+  position: Point;
+  /** `performance.now()` at the pointerdown — bounds the click duration. */
+  downTime: number;
+  /** The datum the hit-tester returned at pointerdown. */
+  datum: D;
+}
+
+/** @internal — mutable state for hover deduplication and click bookkeeping. */
 interface HoverState<D> {
   lastDatum: D | null;
+  pendingClick: PendingClick<D> | null;
 }
 
 /**
@@ -96,17 +125,29 @@ interface HoverState<D> {
  * Exported for unit testing — the class is a thin shell that wires PIXI
  * pointer events to this helper. Mutates `state` in place.
  *
- * Behavior:
+ * **Hover behavior:**
  * - `move`: if hit returns a datum, emit `hover` with `isNewDatum` set to
  *   `true` when the datum differs from `lastDatum` (or `lastDatum` is null)
  *   and `false` when it's the same reference; `lastDatum` is updated to the
  *   current datum. If hit returns `null` and we had a prior datum, emit
- *   `leave` and clear `lastDatum`. The flag preserves the content-dedup
- *   intent (consumers skip re-rendering identical tooltip content) while
- *   letting position updates flow on every sample.
- * - `down`: only emits when `isPrimaryButton` is true AND hit returns a
- *   datum. State is not touched (a click never implies a hover transition).
+ *   `leave` and clear `lastDatum`.
  * - `leave`: if we had a prior datum, emit `leave` and clear `lastDatum`.
+ *
+ * **Click behavior (pointerdown → pointerup):**
+ * - `down` with primary button over a datum: record `pendingClick` (position,
+ *   time, datum). Do not emit yet — conventional click semantics need the
+ *   matching `up`.
+ * - `up` with primary button while `pendingClick` is set: emit `click` iff
+ *   the cursor moved less than {@link CLICK_MAX_DISTANCE_PX} from the down
+ *   position AND the duration is under {@link CLICK_MAX_DURATION_MS}. Either
+ *   way, `pendingClick` is cleared. Outside the thresholds it's a drag /
+ *   long-press, not a click.
+ * - `move` while `pendingClick` is set and cursor exceeds the distance
+ *   threshold: clear `pendingClick`. (The user is dragging.)
+ * - `leave` and non-primary `down`: clear `pendingClick`.
+ *
+ * `now` is supplied by the caller so tests can mock time without spying on
+ * `performance.now()`.
  *
  * @internal
  */
@@ -115,10 +156,12 @@ export function handlePointerSample<D>(
   kind: PointerKind,
   point: Point,
   globalPosition: Point,
+  now: number,
   hitTest: HitTester<D>,
   isPrimaryButton: boolean,
 ): InteractionEvent<D> | null {
   if (kind === 'leave') {
+    state.pendingClick = null;
     if (state.lastDatum !== null) {
       state.lastDatum = null;
       return { type: 'leave' };
@@ -127,13 +170,59 @@ export function handlePointerSample<D>(
   }
 
   if (kind === 'down') {
-    if (!isPrimaryButton) return null;
+    if (!isPrimaryButton) {
+      // Right/middle button — abandon any in-flight primary click; the user
+      // started a different gesture.
+      state.pendingClick = null;
+      return null;
+    }
     const datum = hitTest(point);
-    if (datum === null) return null;
-    return { type: 'click', datum, position: point, globalPosition };
+    if (datum === null) {
+      state.pendingClick = null;
+      return null;
+    }
+    state.pendingClick = {
+      position: { x: point.x, y: point.y },
+      downTime: now,
+      datum,
+    };
+    return null;
+  }
+
+  if (kind === 'up') {
+    const pending = state.pendingClick;
+    if (pending === null) return null;
+    if (!isPrimaryButton) {
+      // Non-primary release — leave the primary pending click intact.
+      return null;
+    }
+    state.pendingClick = null;
+    const dx = point.x - pending.position.x;
+    const dy = point.y - pending.position.y;
+    const distanceSq = dx * dx + dy * dy;
+    const dt = now - pending.downTime;
+    if (
+      distanceSq <= CLICK_MAX_DISTANCE_PX * CLICK_MAX_DISTANCE_PX &&
+      dt <= CLICK_MAX_DURATION_MS
+    ) {
+      return {
+        type: 'click',
+        datum: pending.datum,
+        position: pending.position,
+        globalPosition,
+      };
+    }
+    return null;
   }
 
   // kind === 'move'
+  if (state.pendingClick !== null) {
+    const dx = point.x - state.pendingClick.position.x;
+    const dy = point.y - state.pendingClick.position.y;
+    if (dx * dx + dy * dy > CLICK_MAX_DISTANCE_PX * CLICK_MAX_DISTANCE_PX) {
+      state.pendingClick = null;
+    }
+  }
   const datum = hitTest(point);
   if (datum === null) {
     if (state.lastDatum !== null) {
@@ -181,12 +270,13 @@ export class InteractionLayer<D> {
   private readonly sprite: Sprite;
   private hitTest: HitTester<D>;
   private readonly onEvent: (event: InteractionEvent<D>) => void;
-  private readonly state: HoverState<D> = { lastDatum: null };
+  private readonly state: HoverState<D> = { lastDatum: null, pendingClick: null };
   private _destroyed = false;
 
   // Bound handlers — stored so the exact reference can be passed to `.off()`.
   private readonly onPointerMove: (event: FederatedPointerEvent) => void;
   private readonly onPointerDown: (event: FederatedPointerEvent) => void;
+  private readonly onPointerUp: (event: FederatedPointerEvent) => void;
   private readonly onPointerLeave: (event: FederatedPointerEvent) => void;
 
   constructor(opts: InteractionLayerOptions<D>) {
@@ -206,12 +296,16 @@ export class InteractionLayer<D> {
     this.onPointerDown = (event: FederatedPointerEvent): void => {
       this.dispatch('down', event, event.button === 0);
     };
+    this.onPointerUp = (event: FederatedPointerEvent): void => {
+      this.dispatch('up', event, event.button === 0);
+    };
     this.onPointerLeave = (event: FederatedPointerEvent): void => {
       this.dispatch('leave', event, true);
     };
 
     sprite.on('pointermove', this.onPointerMove);
     sprite.on('pointerdown', this.onPointerDown);
+    sprite.on('pointerup', this.onPointerUp);
     sprite.on('pointerleave', this.onPointerLeave);
   }
 
@@ -252,6 +346,9 @@ export class InteractionLayer<D> {
     }
     this.hitTest = hitTest;
     this.state.lastDatum = null;
+    // The pending click's datum reference may have just been invalidated by
+    // the data swap — drop it so we don't fire a click for a stale row.
+    this.state.pendingClick = null;
   }
 
   /**
@@ -264,6 +361,7 @@ export class InteractionLayer<D> {
 
     this.sprite.off('pointermove', this.onPointerMove);
     this.sprite.off('pointerdown', this.onPointerDown);
+    this.sprite.off('pointerup', this.onPointerUp);
     this.sprite.off('pointerleave', this.onPointerLeave);
 
     if (this.sprite.parent !== null) {
@@ -285,6 +383,7 @@ export class InteractionLayer<D> {
       kind,
       point,
       globalPosition,
+      performance.now(),
       this.hitTest,
       isPrimary,
     );

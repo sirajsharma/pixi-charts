@@ -30,6 +30,50 @@ export interface UpdateOptions {
 }
 
 /**
+ * Event types the public {@link Chart.on} / {@link Chart.off} API accepts.
+ * Currently only `'click'`. Kept as a string-literal union so additional
+ * events (e.g. `'hover'`) can be added without breaking the API shape.
+ */
+export type ChartEventType = 'click';
+
+/**
+ * Payload fired to handlers registered via {@link Chart.on}`('click', ...)`.
+ *
+ * The library reports the click; the consumer decides what to do with it
+ * (open a detail panel, drill into the next data level via `chart.update()`,
+ * etc.). Drilldown is a pattern, not a built-in — see the docs example.
+ */
+export interface ChartClickEvent {
+  /**
+   * The original data row from the chart's current `data` array — the same
+   * reference that was passed in `spec.data`. Use this to identify what
+   * the user clicked.
+   */
+  datum: Record<string, unknown>;
+  /**
+   * Index of {@link datum} in the chart's current `data` array, or `-1`
+   * if it could not be located (e.g. the data was replaced between the
+   * hit-test and event emission — should not happen in practice).
+   */
+  index: number;
+  /**
+   * Click position in plot-area-local pixel coordinates (origin at the
+   * plot area's top-left). Useful for positioning a popover or context
+   * menu at the click site.
+   */
+  position: { x: number; y: number };
+  /**
+   * For multi-series charts (Line, Area), the name of the series the
+   * clicked datum belongs to. Undefined on single-series charts (Bar,
+   * Scatter, Heatmap, Pie).
+   */
+  series?: string;
+}
+
+/** Handler signature for {@link Chart.on}`('click', handler)`. */
+export type ChartEventHandler = (event: ChartClickEvent) => void;
+
+/**
  * Abstract base class for every chart in `pixi-charts`.
  *
  * Responsibilities of this class — and ONLY these:
@@ -81,6 +125,12 @@ export abstract class Chart {
 
   private resizeObserver: ResizeObserver | null = null;
   private activeTweens: (() => void)[] = [];
+
+  /**
+   * Click handlers registered via {@link on}. Cleared on {@link destroy}.
+   * @internal
+   */
+  private clickHandlers = new Set<ChartEventHandler>();
 
   /**
    * Carries {@link UpdateOptions} from {@link update} into the next
@@ -173,6 +223,63 @@ export abstract class Chart {
     this.replaceData(newData);
     this.pendingUpdateOptions = options;
     this.render();
+  }
+
+  /**
+   * Register a handler for a chart event. Returns an unsubscribe function;
+   * calling it (or {@link off}) removes the handler.
+   *
+   * Currently only `'click'` is supported. Handlers receive a
+   * {@link ChartClickEvent} describing the clicked datum, its index, the
+   * plot-area-local pixel position, and (for multi-series charts) the
+   * series name. The library reports the click; what it means is up to
+   * the consumer — pair with {@link update} to build drilldown.
+   *
+   * Handlers are cleared automatically on {@link destroy}.
+   *
+   * @example
+   * ```ts
+   * const off = chart.on('click', (event) => {
+   *   console.log('clicked', event.datum, 'at index', event.index);
+   * });
+   * // later: off();   //  or:  chart.off('click', handler);
+   * ```
+   */
+  on(_event: 'click', handler: ChartEventHandler): () => void {
+    this.clickHandlers.add(handler);
+    return () => {
+      this.clickHandlers.delete(handler);
+    };
+  }
+
+  /**
+   * Remove a previously registered click handler. No-op if the handler
+   * wasn't registered, or after {@link destroy}.
+   */
+  off(_event: 'click', handler: ChartEventHandler): void {
+    this.clickHandlers.delete(handler);
+  }
+
+  /**
+   * Invoke every registered click handler with the given event. Each
+   * handler is invoked in a try/catch so one throwing handler does not
+   * block the others (errors are logged via `console.error`).
+   *
+   * Subclasses call this from their {@link import('./InteractionLayer.js').InteractionLayer} `onEvent`
+   * handler when the layer emits a `click`.
+   *
+   * @internal
+   */
+  protected emitClick(event: ChartClickEvent): void {
+    if (this._destroyed) return;
+    for (const handler of this.clickHandlers) {
+      try {
+        handler(event);
+      } catch (err) {
+        // Surface handler errors without breaking other handlers.
+        console.error('pixi-charts: click handler threw', err);
+      }
+    }
   }
 
   /**
@@ -289,6 +396,7 @@ export abstract class Chart {
     this._destroyed = true;
 
     this.cancelAllTweens();
+    this.clickHandlers.clear();
 
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();

@@ -659,3 +659,57 @@ describe('ScatterChart — hover decoration', () => {
     expect(chart.destroyed).toBe(true);
   });
 });
+
+describe('ScatterChart — click events', () => {
+  function clickSpec(): ChartSpec {
+    return {
+      type: 'scatter',
+      data: [
+        { x: 0, y: 0 },
+        { x: 10, y: 10 },
+      ],
+      encoding: {
+        x: { field: 'x', type: 'quantitative' },
+        y: { field: 'y', type: 'quantitative' },
+      },
+      animation: { enter: false },
+    };
+  }
+
+  function fireClick(local: { x: number; y: number }): void {
+    const evt = makePointerEvent(local);
+    fireOnInteractionSprite('pointerdown', evt);
+    fireOnInteractionSprite('pointerup', evt);
+  }
+
+  it('fires click with the source datum and correct index', async () => {
+    const chart = new ScatterChart({ container: makeContainer(), spec: clickSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireClick({ x: 0, y: 536 });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const payload = handler.mock.calls[0]![0];
+    expect(payload.datum).toEqual({ x: 0, y: 0 });
+    expect(payload.index).toBe(0);
+    expect(payload.position).toEqual({ x: 0, y: 536 });
+    expect(payload.series).toBeUndefined();
+    chart.destroy();
+  });
+
+  it('drag does NOT fire click', async () => {
+    const chart = new ScatterChart({ container: makeContainer(), spec: clickSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireOnInteractionSprite('pointerdown', makePointerEvent({ x: 0, y: 536 }));
+    fireOnInteractionSprite('pointermove', makePointerEvent({ x: 100, y: 436 }));
+    fireOnInteractionSprite('pointerup', makePointerEvent({ x: 100, y: 436 }));
+
+    expect(handler).not.toHaveBeenCalled();
+    chart.destroy();
+  });
+});

@@ -652,6 +652,48 @@ describe('HeatmapChart — hover decoration', () => {
   });
 });
 
+describe('HeatmapChart — click events', () => {
+  const CELL_AP_PX = { x: 90, y: 130 };
+
+  function fireClick(local: { x: number; y: number }): void {
+    const evt = makePointerEvent(local);
+    fireOnInteractionSprite('pointerdown', evt);
+    fireOnInteractionSprite('pointerup', evt);
+  }
+
+  it('fires click with the source datum row and its index', async () => {
+    const chart = new HeatmapChart({ container: makeContainer(), spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireClick(CELL_AP_PX);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const payload = handler.mock.calls[0]![0];
+    // CELL_AP is the cell at x='A', y='p' → first row in the data.
+    expect(payload.datum).toEqual({ x: 'A', y: 'p', count: 5 });
+    expect(payload.index).toBe(0);
+    expect(payload.position).toEqual(CELL_AP_PX);
+    expect(payload.series).toBeUndefined();
+    chart.destroy();
+  });
+
+  it('drag suppresses click', async () => {
+    const chart = new HeatmapChart({ container: makeContainer(), spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireOnInteractionSprite('pointerdown', makePointerEvent(CELL_AP_PX));
+    fireOnInteractionSprite('pointermove', makePointerEvent({ x: 200, y: 200 }));
+    fireOnInteractionSprite('pointerup', makePointerEvent({ x: 200, y: 200 }));
+
+    expect(handler).not.toHaveBeenCalled();
+    chart.destroy();
+  });
+});
+
 describe('HeatmapChart — long band-axis labels', () => {
   it('truncates long y-category labels when the left margin cap is exceeded', async () => {
     // Force the left (y-band) measurement past the cap: tiny canvas width

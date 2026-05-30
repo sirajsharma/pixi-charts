@@ -496,8 +496,19 @@ export class LineChart extends Chart {
       this.clearHoverDecoration();
       this.tooltip?.hide();
       this.lastTooltipContent = null;
+    } else {
+      // Narrowed to ClickEvent — hover/leave handled above.
+      const datum = event.datum.point.datum;
+      const seriesName = event.datum.series.name;
+      this.emitClick({
+        datum,
+        index: this.spec.data.indexOf(datum),
+        position: { x: event.position.x, y: event.position.y },
+        // Internal single-series sentinel is '' — omit so consumers see
+        // `series === undefined` for single-line charts.
+        ...(seriesName !== '' ? { series: seriesName } : {}),
+      });
     }
-    // click: no-op for v1.
   }
 
   /** @internal */

@@ -806,6 +806,100 @@ describe('LineChart — hover decoration', () => {
   });
 });
 
+describe('LineChart — click events', () => {
+  const DATUM_0 = { x: 0, y: 429 };
+
+  function fireClick(local: { x: number; y: number }): void {
+    const evt = makePointerEvent(local);
+    fireOnInteractionSprite('pointerdown', evt);
+    fireOnInteractionSprite('pointerup', evt);
+  }
+
+  it('fires the click handler with the source datum, its index, and the down position', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new LineChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireClick(DATUM_0);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const payload = handler.mock.calls[0]![0];
+    expect(payload.datum).toEqual({ x: 0, y: 10 });
+    expect(payload.index).toBe(0);
+    expect(payload.position).toEqual(DATUM_0);
+    // Single-series spec → no `series` field in the payload.
+    expect(payload.series).toBeUndefined();
+
+    chart.destroy();
+  });
+
+  it('multi-series spec (color encoding) reports the series name', async () => {
+    const container = makeContainer(800, 600);
+    // Data shape mirrors the single-series test (y max = 50) so the niced
+    // y-scale matches and (0, 429) maps onto the first red datum at value 10.
+    const chart = new LineChart({
+      container,
+      spec: makeSpec({
+        data: [
+          { x: 0, y: 10, g: 'red' },
+          { x: 1, y: 30, g: 'red' },
+          { x: 0, y: 20, g: 'blue' },
+          { x: 1, y: 50, g: 'blue' },
+        ],
+        encoding: {
+          x: { field: 'x', type: 'quantitative' },
+          y: { field: 'y', type: 'quantitative' },
+          color: { field: 'g' },
+        },
+      }),
+    });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireClick({ x: 0, y: 429 });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const payload = handler.mock.calls[0]![0];
+    expect(payload.series).toBe('red');
+    expect(payload.datum).toEqual({ x: 0, y: 10, g: 'red' });
+    chart.destroy();
+  });
+
+  it('unsubscribe stops further firings', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new LineChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    const off = chart.on('click', handler);
+    fireClick(DATUM_0);
+    expect(handler).toHaveBeenCalledTimes(1);
+    off();
+    fireClick(DATUM_0);
+    expect(handler).toHaveBeenCalledTimes(1);
+    chart.destroy();
+  });
+
+  it('drag (move >5px between down and up) does NOT fire click', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new LineChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+
+    fireOnInteractionSprite('pointerdown', makePointerEvent(DATUM_0));
+    fireOnInteractionSprite('pointermove', makePointerEvent({ x: 100, y: 100 }));
+    fireOnInteractionSprite('pointerup', makePointerEvent({ x: 100, y: 100 }));
+
+    expect(handler).not.toHaveBeenCalled();
+    chart.destroy();
+  });
+});
+
 describe('LineChart — axis-rendering options', () => {
   it('with showAxes: false, no axis-line / tick-label Text is rendered', async () => {
     const baseline = new LineChart({ container: makeContainer(), spec: makeSpec() });

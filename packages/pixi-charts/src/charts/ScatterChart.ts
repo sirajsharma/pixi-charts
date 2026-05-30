@@ -928,8 +928,15 @@ export class ScatterChart extends Chart {
       this.clearHoverDecoration();
       this.tooltip?.hide();
       this.lastTooltipContent = null;
+    } else {
+      // Narrowed to ClickEvent — hover/leave handled above.
+      const datum = event.datum.datum;
+      this.emitClick({
+        datum,
+        index: this.spec.data.indexOf(datum),
+        position: { x: event.position.x, y: event.position.y },
+      });
     }
-    // click: no-op for v1 (wired so a future handler drops in cleanly).
   }
 
   /** @internal */

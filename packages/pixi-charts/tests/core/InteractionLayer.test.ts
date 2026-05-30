@@ -103,15 +103,30 @@ beforeEach(() => {
  * Pure helper unit tests                                                     *
  * -------------------------------------------------------------------------- */
 
+interface SampleState<D> {
+  lastDatum: D | null;
+  pendingClick: { position: Point; downTime: number; datum: D } | null;
+}
+
+function makeState<D>(overrides: Partial<SampleState<D>> = {}): SampleState<D> {
+  return {
+    lastDatum: null,
+    pendingClick: null,
+    ...overrides,
+  };
+}
+
 describe('handlePointerSample', () => {
   const point: Point = { x: 10, y: 20 };
   const globalPosition: Point = { x: 110, y: 120 };
   const datumA = { id: 'a' };
   const datumB = { id: 'b' };
 
+  /* ------- hover (move) cases ------- */
+
   it('move: hit a new datum with no prior → emits hover with isNewDatum=true and stores it', () => {
-    const state = { lastDatum: null as typeof datumA | null };
-    const result = handlePointerSample(state, 'move', point, globalPosition, () => datumA, true);
+    const state = makeState<typeof datumA>();
+    const result = handlePointerSample(state, 'move', point, globalPosition, 0, () => datumA, true);
 
     expect(result).toEqual({
       type: 'hover',
@@ -124,8 +139,8 @@ describe('handlePointerSample', () => {
   });
 
   it('move: hit the same datum as before → emits hover with isNewDatum=false', () => {
-    const state = { lastDatum: datumA as typeof datumA | null };
-    const result = handlePointerSample(state, 'move', point, globalPosition, () => datumA, true);
+    const state = makeState<typeof datumA>({ lastDatum: datumA });
+    const result = handlePointerSample(state, 'move', point, globalPosition, 0, () => datumA, true);
 
     expect(result).toEqual({
       type: 'hover',
@@ -138,10 +153,10 @@ describe('handlePointerSample', () => {
   });
 
   it('move: in-datum move with different point coords → event.position reflects the new point', () => {
-    const state = { lastDatum: datumA as typeof datumA | null };
+    const state = makeState<typeof datumA>({ lastDatum: datumA });
     const newPoint: Point = { x: 99, y: 88 };
     const newGlobal: Point = { x: 199, y: 188 };
-    const result = handlePointerSample(state, 'move', newPoint, newGlobal, () => datumA, true);
+    const result = handlePointerSample(state, 'move', newPoint, newGlobal, 0, () => datumA, true);
 
     expect(result).toEqual({
       type: 'hover',
@@ -153,8 +168,8 @@ describe('handlePointerSample', () => {
   });
 
   it('move: hit a different datum → emits hover with isNewDatum=true for the new datum', () => {
-    const state = { lastDatum: datumA as typeof datumA | null };
-    const result = handlePointerSample(state, 'move', point, globalPosition, () => datumB, true);
+    const state = makeState<typeof datumA>({ lastDatum: datumA });
+    const result = handlePointerSample(state, 'move', point, globalPosition, 0, () => datumB, true);
 
     expect(result).toEqual({
       type: 'hover',
@@ -167,56 +182,200 @@ describe('handlePointerSample', () => {
   });
 
   it('move: miss with prior datum → emits leave and clears state', () => {
-    const state = { lastDatum: datumA as typeof datumA | null };
-    const result = handlePointerSample(state, 'move', point, globalPosition, () => null, true);
+    const state = makeState<typeof datumA>({ lastDatum: datumA });
+    const result = handlePointerSample(state, 'move', point, globalPosition, 0, () => null, true);
 
     expect(result).toEqual({ type: 'leave' });
     expect(state.lastDatum).toBeNull();
   });
 
   it('move: miss with no prior datum → returns null', () => {
-    const state = { lastDatum: null as typeof datumA | null };
-    const result = handlePointerSample(state, 'move', point, globalPosition, () => null, true);
+    const state = makeState<typeof datumA>();
+    const result = handlePointerSample(state, 'move', point, globalPosition, 0, () => null, true);
 
     expect(result).toBeNull();
     expect(state.lastDatum).toBeNull();
   });
 
-  it('down: primary button + hit → emits click; state untouched', () => {
-    const state = { lastDatum: null as typeof datumA | null };
-    const result = handlePointerSample(state, 'down', point, globalPosition, () => datumA, true);
-
-    expect(result).toEqual({ type: 'click', datum: datumA, position: point, globalPosition });
-    expect(state.lastDatum).toBeNull();
+  it('move: while pendingClick is set and cursor moves <5px → pendingClick stays', () => {
+    const downPos: Point = { x: 10, y: 20 };
+    const state = makeState<typeof datumA>({
+      pendingClick: { position: downPos, downTime: 0, datum: datumA },
+    });
+    handlePointerSample(state, 'move', { x: 12, y: 22 }, globalPosition, 50, () => datumA, true);
+    expect(state.pendingClick).not.toBeNull();
   });
 
-  it('down: primary button + miss → returns null', () => {
-    const state = { lastDatum: null as typeof datumA | null };
-    const result = handlePointerSample(state, 'down', point, globalPosition, () => null, true);
+  it('move: while pendingClick is set and cursor moves >5px → pendingClick is cleared (drag)', () => {
+    const downPos: Point = { x: 10, y: 20 };
+    const state = makeState<typeof datumA>({
+      pendingClick: { position: downPos, downTime: 0, datum: datumA },
+    });
+    handlePointerSample(state, 'move', { x: 30, y: 30 }, globalPosition, 50, () => datumA, true);
+    expect(state.pendingClick).toBeNull();
+  });
+
+  /* ------- pointerdown cases (no longer emit immediately) ------- */
+
+  it('down: primary button + hit → records pendingClick, does NOT emit', () => {
+    const state = makeState<typeof datumA>();
+    const result = handlePointerSample(
+      state,
+      'down',
+      point,
+      globalPosition,
+      1234,
+      () => datumA,
+      true,
+    );
+
+    expect(result).toBeNull();
+    expect(state.pendingClick).toEqual({
+      position: point,
+      downTime: 1234,
+      datum: datumA,
+    });
+  });
+
+  it('down: primary button + miss → clears any pending click and returns null', () => {
+    const state = makeState<typeof datumA>({
+      pendingClick: { position: { x: 0, y: 0 }, downTime: 0, datum: datumA },
+    });
+    const result = handlePointerSample(state, 'down', point, globalPosition, 50, () => null, true);
+
+    expect(result).toBeNull();
+    expect(state.pendingClick).toBeNull();
+  });
+
+  it('down: non-primary button → clears pendingClick and returns null', () => {
+    const state = makeState<typeof datumA>({
+      pendingClick: { position: { x: 0, y: 0 }, downTime: 0, datum: datumA },
+    });
+    const result = handlePointerSample(
+      state,
+      'down',
+      point,
+      globalPosition,
+      50,
+      () => datumA,
+      false,
+    );
+
+    expect(result).toBeNull();
+    expect(state.pendingClick).toBeNull();
+  });
+
+  /* ------- pointerup → click cases ------- */
+
+  it('up: matching down + same position + within time → emits click for the down datum', () => {
+    const downPos: Point = { x: 10, y: 20 };
+    const state = makeState<typeof datumA>({
+      pendingClick: { position: downPos, downTime: 100, datum: datumA },
+    });
+    const result = handlePointerSample(
+      state,
+      'up',
+      { x: 11, y: 21 }, // moved <5px from down
+      globalPosition,
+      200, // dt = 100ms, under threshold
+      () => datumA,
+      true,
+    );
+
+    expect(result).toEqual({
+      type: 'click',
+      datum: datumA,
+      position: downPos, // click reports the DOWN position, not the up position
+      globalPosition,
+    });
+    expect(state.pendingClick).toBeNull();
+  });
+
+  it('up: distance exceeds threshold → does NOT emit (drag)', () => {
+    const downPos: Point = { x: 10, y: 20 };
+    const state = makeState<typeof datumA>({
+      pendingClick: { position: downPos, downTime: 100, datum: datumA },
+    });
+    const result = handlePointerSample(
+      state,
+      'up',
+      { x: 50, y: 50 },
+      globalPosition,
+      200,
+      () => datumA,
+      true,
+    );
+
+    expect(result).toBeNull();
+    expect(state.pendingClick).toBeNull();
+  });
+
+  it('up: duration exceeds threshold → does NOT emit (long press)', () => {
+    const downPos: Point = { x: 10, y: 20 };
+    const state = makeState<typeof datumA>({
+      pendingClick: { position: downPos, downTime: 100, datum: datumA },
+    });
+    const result = handlePointerSample(
+      state,
+      'up',
+      { x: 11, y: 21 },
+      globalPosition,
+      1000, // dt = 900ms, over the 500ms threshold
+      () => datumA,
+      true,
+    );
+
+    expect(result).toBeNull();
+    expect(state.pendingClick).toBeNull();
+  });
+
+  it('up: no pendingClick → returns null (orphan up)', () => {
+    const state = makeState<typeof datumA>();
+    const result = handlePointerSample(state, 'up', point, globalPosition, 100, () => null, true);
 
     expect(result).toBeNull();
   });
 
-  it('down: non-primary button → returns null regardless of hit', () => {
-    const state = { lastDatum: null as typeof datumA | null };
-    const result = handlePointerSample(state, 'down', point, globalPosition, () => datumA, false);
+  it('up: non-primary release while primary down is pending → keeps pendingClick intact', () => {
+    const downPos: Point = { x: 10, y: 20 };
+    const pending = { position: downPos, downTime: 100, datum: datumA };
+    const state = makeState<typeof datumA>({ pendingClick: pending });
+    const result = handlePointerSample(
+      state,
+      'up',
+      { x: 11, y: 21 },
+      globalPosition,
+      150,
+      () => datumA,
+      false,
+    );
 
     expect(result).toBeNull();
+    expect(state.pendingClick).toBe(pending);
   });
 
-  it('leave: with prior datum → emits leave and clears state', () => {
-    const state = { lastDatum: datumA as typeof datumA | null };
-    const result = handlePointerSample(state, 'leave', point, globalPosition, () => null, true);
+  /* ------- leave clears pendingClick ------- */
+
+  it('leave: with prior datum → emits leave, clears lastDatum and pendingClick', () => {
+    const state = makeState<typeof datumA>({
+      lastDatum: datumA,
+      pendingClick: { position: point, downTime: 0, datum: datumA },
+    });
+    const result = handlePointerSample(state, 'leave', point, globalPosition, 50, () => null, true);
 
     expect(result).toEqual({ type: 'leave' });
     expect(state.lastDatum).toBeNull();
+    expect(state.pendingClick).toBeNull();
   });
 
-  it('leave: with no prior datum → returns null', () => {
-    const state = { lastDatum: null as typeof datumA | null };
-    const result = handlePointerSample(state, 'leave', point, globalPosition, () => null, true);
+  it('leave: with no prior datum → returns null but still clears pendingClick', () => {
+    const state = makeState<typeof datumA>({
+      pendingClick: { position: point, downTime: 0, datum: datumA },
+    });
+    const result = handlePointerSample(state, 'leave', point, globalPosition, 50, () => null, true);
 
     expect(result).toBeNull();
+    expect(state.pendingClick).toBeNull();
   });
 });
 
@@ -272,7 +431,7 @@ describe('InteractionLayer — construction', () => {
     expect(sprite.parent).toBe(MockContainer.instances[0]);
   });
 
-  it('registers pointermove, pointerdown, pointerleave handlers', () => {
+  it('registers pointermove, pointerdown, pointerup, pointerleave handlers', () => {
     const stage = new Container();
     new InteractionLayer<TestDatum>({
       stage,
@@ -285,6 +444,7 @@ describe('InteractionLayer — construction', () => {
     const sprite = MockSprite.instances[0]!;
     expect(sprite.handlers.get('pointermove')?.size).toBe(1);
     expect(sprite.handlers.get('pointerdown')?.size).toBe(1);
+    expect(sprite.handlers.get('pointerup')?.size).toBe(1);
     expect(sprite.handlers.get('pointerleave')?.size).toBe(1);
   });
 });
@@ -420,7 +580,7 @@ describe('InteractionLayer — event dispatch', () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  it('pointerdown button=0 with hit → fires click', () => {
+  it('pointerdown alone (no pointerup) → does NOT fire click', () => {
     const stage = new Container();
     const onEvent = vi.fn<(event: InteractionEvent<TestDatum>) => void>();
     const datum: TestDatum = { id: 'p1' };
@@ -435,11 +595,60 @@ describe('InteractionLayer — event dispatch', () => {
 
     fire(0, 'pointerdown', makeEvent({ local: { x: 5, y: 5 }, button: 0 }));
 
-    expect(onEvent).toHaveBeenCalledTimes(1);
-    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'click', datum }));
+    expect(onEvent).not.toHaveBeenCalled();
   });
 
-  it('pointerdown button=2 (right-click) → does NOT fire', () => {
+  it('pointerdown + pointerup at the same spot → fires click with the down position and datum', () => {
+    const stage = new Container();
+    const onEvent = vi.fn<(event: InteractionEvent<TestDatum>) => void>();
+    const datum: TestDatum = { id: 'p1' };
+
+    new InteractionLayer<TestDatum>({
+      stage,
+      width: 100,
+      height: 100,
+      hitTest: () => datum,
+      onEvent,
+    });
+
+    fire(0, 'pointerdown', makeEvent({ local: { x: 5, y: 5 }, button: 0 }));
+    fire(0, 'pointerup', makeEvent({ local: { x: 6, y: 5 }, button: 0 }));
+
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'click',
+        datum,
+        position: { x: 5, y: 5 }, // the DOWN position
+      }),
+    );
+  });
+
+  it('pointerdown + drag (move >5px) + pointerup → does NOT fire click', () => {
+    const stage = new Container();
+    const onEvent = vi.fn<(event: InteractionEvent<TestDatum>) => void>();
+    const datum: TestDatum = { id: 'p1' };
+
+    new InteractionLayer<TestDatum>({
+      stage,
+      width: 100,
+      height: 100,
+      hitTest: () => datum,
+      onEvent,
+    });
+
+    fire(0, 'pointerdown', makeEvent({ local: { x: 5, y: 5 }, button: 0 }));
+    onEvent.mockClear();
+    fire(0, 'pointermove', makeEvent({ local: { x: 25, y: 25 } }));
+    fire(0, 'pointerup', makeEvent({ local: { x: 25, y: 25 }, button: 0 }));
+
+    const clickCalls = onEvent.mock.calls.filter(
+      (c) => (c[0] as { type: string }).type === 'click',
+    );
+    expect(clickCalls).toHaveLength(0);
+  });
+
+  it('pointerdown button=2 (right-click) → does NOT fire and does not arm pendingClick', () => {
     const stage = new Container();
     const onEvent = vi.fn<(event: InteractionEvent<TestDatum>) => void>();
     const datum: TestDatum = { id: 'p1' };
@@ -453,6 +662,24 @@ describe('InteractionLayer — event dispatch', () => {
     });
 
     fire(0, 'pointerdown', makeEvent({ button: 2 }));
+    fire(0, 'pointerup', makeEvent({ button: 0 }));
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it('pointerdown on a miss + pointerup → does NOT fire click', () => {
+    const stage = new Container();
+    const onEvent = vi.fn<(event: InteractionEvent<TestDatum>) => void>();
+
+    new InteractionLayer<TestDatum>({
+      stage,
+      width: 100,
+      height: 100,
+      hitTest: () => null,
+      onEvent,
+    });
+
+    fire(0, 'pointerdown', makeEvent({ local: { x: 5, y: 5 }, button: 0 }));
+    fire(0, 'pointerup', makeEvent({ local: { x: 5, y: 5 }, button: 0 }));
     expect(onEvent).not.toHaveBeenCalled();
   });
 });
@@ -504,6 +731,26 @@ describe('InteractionLayer — resize and setHitTester', () => {
       expect.objectContaining({ type: 'hover', datum, isNewDatum: true }),
     );
   });
+
+  it('setHitTester() drops any pending click so a stale row is never reported', () => {
+    const stage = new Container();
+    const onEvent = vi.fn<(event: InteractionEvent<TestDatum>) => void>();
+    const datum: TestDatum = { id: 'p1' };
+
+    const layer = new InteractionLayer<TestDatum>({
+      stage,
+      width: 100,
+      height: 100,
+      hitTest: () => datum,
+      onEvent,
+    });
+
+    fire(0, 'pointerdown', makeEvent({ local: { x: 5, y: 5 }, button: 0 }));
+    layer.setHitTester(() => datum);
+    fire(0, 'pointerup', makeEvent({ local: { x: 5, y: 5 }, button: 0 }));
+
+    expect(onEvent).not.toHaveBeenCalled();
+  });
 });
 
 describe('InteractionLayer — destroy()', () => {
@@ -522,9 +769,10 @@ describe('InteractionLayer — destroy()', () => {
 
     layer.destroy();
 
-    expect(sprite.off).toHaveBeenCalledTimes(3);
+    expect(sprite.off).toHaveBeenCalledTimes(4);
     expect(sprite.handlers.get('pointermove')?.size ?? 0).toBe(0);
     expect(sprite.handlers.get('pointerdown')?.size ?? 0).toBe(0);
+    expect(sprite.handlers.get('pointerup')?.size ?? 0).toBe(0);
     expect(sprite.handlers.get('pointerleave')?.size ?? 0).toBe(0);
     expect(container.children).not.toContain(sprite);
     expect(sprite.destroyed).toBe(true);

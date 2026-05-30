@@ -668,3 +668,47 @@ describe('AreaChart — hover decoration', () => {
     expect(chart.destroyed).toBe(true);
   });
 });
+
+describe('AreaChart — click events', () => {
+  // Same data shape as makeSpec default: y ∈ {10, 30, 20, 50} → y-scale [0, 50].
+  const DATUM_0_PX = { x: 0, y: 429 };
+
+  function fireClick(local: { x: number; y: number }): void {
+    const evt = makePointerEvent(local);
+    fireOnInteractionSprite('pointerdown', evt);
+    fireOnInteractionSprite('pointerup', evt);
+  }
+
+  it('fires click with the source datum and correct index', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new AreaChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireClick(DATUM_0_PX);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const payload = handler.mock.calls[0]![0];
+    expect(payload.datum).toEqual({ x: 0, y: 10 });
+    expect(payload.index).toBe(0);
+    expect(payload.position).toEqual(DATUM_0_PX);
+    expect(payload.series).toBeUndefined();
+    chart.destroy();
+  });
+
+  it('drag suppresses click', async () => {
+    const container = makeContainer(800, 600);
+    const chart = new AreaChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireOnInteractionSprite('pointerdown', makePointerEvent(DATUM_0_PX));
+    fireOnInteractionSprite('pointermove', makePointerEvent({ x: 200, y: 200 }));
+    fireOnInteractionSprite('pointerup', makePointerEvent({ x: 200, y: 200 }));
+
+    expect(handler).not.toHaveBeenCalled();
+    chart.destroy();
+  });
+});

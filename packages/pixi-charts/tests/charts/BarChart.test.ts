@@ -584,6 +584,98 @@ describe('BarChart — tooltip & interaction', () => {
   });
 });
 
+describe('BarChart — click events', () => {
+  // (120, 400) hits bar A in the default spec — confirmed by the existing
+  // tooltip test that fires at the same coords and expects a tooltip to show.
+  const HIT_X = 120;
+  const HIT_Y = 400;
+
+  function fireDownUp(spriteIndex: number, x: number, y: number): void {
+    const sprite = MockSprite.sInstances[spriteIndex]!;
+    const downHandlers = sprite.handlers.get('pointerdown');
+    const upHandlers = sprite.handlers.get('pointerup');
+    expect(downHandlers).toBeDefined();
+    expect(upHandlers).toBeDefined();
+    const event = {
+      button: 0,
+      client: { x, y },
+      getLocalPosition: () => ({ x, y }),
+    };
+    for (const h of downHandlers!) h(event);
+    for (const h of upHandlers!) h(event);
+  }
+
+  it('fires the registered click handler with the BarRecord datum, index, and position', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireDownUp(0, HIT_X, HIT_Y);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        datum: { name: 'A', count: 10 },
+        index: 0,
+        position: { x: HIT_X, y: HIT_Y },
+      }),
+    );
+    expect(handler.mock.calls[0]![0].series).toBeUndefined();
+    chart.destroy();
+  });
+
+  it('returns an unsubscribe function from on() that stops further firings', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    const unsubscribe = chart.on('click', handler);
+    fireDownUp(0, HIT_X, HIT_Y);
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    fireDownUp(0, HIT_X, HIT_Y);
+    expect(handler).toHaveBeenCalledTimes(1);
+    chart.destroy();
+  });
+
+  it('drag (pointerdown → move >5px → pointerup) does NOT fire click', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+
+    const sprite = MockSprite.sInstances[0]!;
+    const ev = (x: number, y: number) => ({
+      button: 0,
+      client: { x, y },
+      getLocalPosition: () => ({ x, y }),
+    });
+    for (const h of sprite.handlers.get('pointerdown')!) h(ev(HIT_X, HIT_Y));
+    for (const h of sprite.handlers.get('pointermove')!) h(ev(HIT_X + 20, HIT_Y + 20));
+    for (const h of sprite.handlers.get('pointerup')!) h(ev(HIT_X + 20, HIT_Y + 20));
+
+    expect(handler).not.toHaveBeenCalled();
+    chart.destroy();
+  });
+
+  it('destroy() clears click handlers', async () => {
+    const container = makeContainer();
+    const chart = new BarChart({ container, spec: makeSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    chart.destroy();
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
+
 describe('BarChart — animation', () => {
   it('animation.enter: false draws bars at full extent without a tween', async () => {
     const container = makeContainer();

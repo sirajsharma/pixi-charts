@@ -908,6 +908,63 @@ describe('PieChart — hover decoration', () => {
   });
 });
 
+describe('PieChart — click events', () => {
+  function clickSpec(): ChartSpec {
+    return {
+      type: 'pie',
+      data: [
+        { browser: 'A', share: 50 },
+        { browser: 'B', share: 50 },
+      ],
+      encoding: {
+        x: { field: 'browser', type: 'categorical' },
+        value: { field: 'share' },
+      },
+      animation: { enter: false },
+    };
+  }
+
+  // Right of center hits slice A (first row).
+  const HIT_RIGHT = { x: 450, y: 284 };
+
+  function fireClick(local: { x: number; y: number }): void {
+    const evt = makePointerEvent(local);
+    fireOnInteractionSprite('pointerdown', evt);
+    fireOnInteractionSprite('pointerup', evt);
+  }
+
+  it('fires click with the source datum row and its index', async () => {
+    const chart = new PieChart({ container: makeContainer(), spec: clickSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireClick(HIT_RIGHT);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const payload = handler.mock.calls[0]![0];
+    expect(payload.datum).toEqual({ browser: 'A', share: 50 });
+    expect(payload.index).toBe(0);
+    expect(payload.position).toEqual(HIT_RIGHT);
+    expect(payload.series).toBeUndefined();
+    chart.destroy();
+  });
+
+  it('drag suppresses click', async () => {
+    const chart = new PieChart({ container: makeContainer(), spec: clickSpec() });
+    await chart.init();
+
+    const handler = vi.fn();
+    chart.on('click', handler);
+    fireOnInteractionSprite('pointerdown', makePointerEvent(HIT_RIGHT));
+    fireOnInteractionSprite('pointermove', makePointerEvent({ x: 250, y: 284 }));
+    fireOnInteractionSprite('pointerup', makePointerEvent({ x: 250, y: 284 }));
+
+    expect(handler).not.toHaveBeenCalled();
+    chart.destroy();
+  });
+});
+
 describe('PieChart — axis options are inert', () => {
   it('renders without throwing when showAxes / showGrid / axisTitles are set', async () => {
     const chart = new PieChart({
