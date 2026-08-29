@@ -58,7 +58,7 @@ export default defineConfig({
         },
         {
           label: 'Interactions',
-          items: [{ label: 'Drilldown', link: '/interactions/drilldown/' }],
+          items: [{ label: 'Click', link: '/interactions/click/' }],
         },
         { label: 'Performance', link: '/performance/' },
         typeDocSidebarGroup,

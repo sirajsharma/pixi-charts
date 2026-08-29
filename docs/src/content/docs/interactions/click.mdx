@@ -1,0 +1,95 @@
+---
+title: Click
+description: chart.on('click', handler) — the primitive. Drilldown is one thing you can build with it.
+---
+
+import { ClickBasicDemo } from '../../../components/ClickBasicDemo';
+import { DrilldownDemo } from '../../../components/DrilldownDemo';
+
+## Overview
+
+Every chart reports when a data element — a bar, a point, a slice, a cell — is clicked. The library reports the click; your application decides what it means. Selection, detail panels, navigation, drilldown — all of it is built on the same primitive.
+
+A click only fires when pointer-down and pointer-up land within ~5 px of each other and within 500 ms. Faster motion or a longer hold reads as a drag or long-press and the click is suppressed. This matches conventional UI expectations and future-proofs against drag interactions on the chart surface. The event payload reports the **down** position (where the user pressed), not the up position — that's what users intend when they click slightly off-target.
+
+The click API is available on all six chart types: Line, Area, Bar, Scatter, Heatmap, and Pie. Clicking is most obviously useful on Bar, Pie, and Scatter, but the same primitive works everywhere — clicking a heatmap cell to inspect its raw row, clicking a line or area point to see its exact value, and so on.
+
+## The event API
+
+```ts
+import { render, type ChartClickEvent } from 'pixi-charts';
+
+const chart = await render(spec, container);
+
+const off = chart.on('click', (event: ChartClickEvent) => {
+  // event.datum, event.index, event.position, event.series
+});
+
+// later: off();   //  or:  chart.off('click', handler);
+```
+
+`chart.on('click', handler)` fires a [`ChartClickEvent`](/api/interfaces/chartclickevent/) with:
+
+- **`datum`** — the clicked data row, the same object reference from your `data` array.
+- **`index`** — its index in that array.
+- **`position`** — the click position in plot-area-local pixels, useful for positioning a popover or context menu.
+- **`series`** — for multi-series charts (Line, Area with color encoding), the series the clicked datum belongs to; `undefined` elsewhere.
+
+`on()` returns an unsubscribe function; `chart.off('click', handler)` does the same. Handlers are cleared automatically when the chart is destroyed. See [`Chart.on`](/api/classes/chart/#on) for the full method signature.
+
+## Basic usage
+
+The simplest possible use of the API: register a handler, click a bar, read `event.datum`.
+
+<ClickBasicDemo client:only="react" />
+
+```ts
+chart.on('click', (event) => {
+  console.log(event.datum); // { label: 'North America', value: 1850, kind: 'region' }
+});
+```
+
+That's the whole pattern. Everything below is one example of what you can build on top of it.
+
+## Example: Drilldown
+
+The click event tells your application what was clicked. What happens next is up to you. Here's one pattern: drilldown. Keep a stack of data levels; clicking a bar pushes the clicked category's breakdown and calls `chart.update()`; a back button (or breadcrumb) pops it. Because `update()` reuses the WebGL context, each transition is instant.
+
+<DrilldownDemo client:only="react" />
+
+Use the breadcrumb above the chart to drill back out.
+
+```ts
+chart.on('click', (event: ChartClickEvent) => {
+  const next = childrenOf(event.datum);
+  if (next !== null) {
+    chart.update(next); // drill in — instant, reuses the WebGL context
+  }
+});
+```
+
+`chart.update(newData)` swaps the rows on the existing chart without recreating the PixiJS `Application`: scales recompute, axes re-tween, the hit-tester is rebuilt, but the GPU resources stay live. Drilling in and out of multiple levels happens in a single frame.
+
+### What the library doesn't do
+
+The library has no concept of a navigation stack, no "drill into children" helper, no parent-pointer model. That's deliberate — every consumer wants something slightly different from drilldown:
+
+- An AI Explorer might "drill" by filtering the dataset by the clicked row.
+- A product catalog might navigate a hierarchical tree.
+- A dashboard might open a side panel with deeper metrics.
+
+If we baked one navigation model into the library, every consumer who wanted a different one would fight it. Instead, the click event is the primitive and the navigation lives in your code.
+
+In the demo above, the React component owns:
+
+1. **The data hierarchy** — regions → countries → cities, hard-coded for the demo but easily fetched on demand in a real app.
+2. **The navigation stack** — a `useState` array of `{ label, data }` levels.
+3. **The breadcrumb UI** — rendered above the chart, pops levels off the stack and calls `chart.update(parentData)` to navigate back.
+
+The chart knows nothing about any of this. It renders whatever rows it's given and reports clicks.
+
+### Wiring it to your encoding
+
+The drilldown demo above uses a single common row shape — `{ label, value, kind }` — at every level. That's the easiest way to keep the chart's encoding stable while the data changes: same field names, same data types, just different rows.
+
+If your levels need different shapes, you can change the spec entirely between levels by destroying the chart and re-rendering — but you'll pay a cold-start cost each transition. The fast path is to normalize your data into a single shape, then use `update()`.

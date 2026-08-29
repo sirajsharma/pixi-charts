@@ -181,7 +181,9 @@ function Breadcrumb({ path, onJump }: BreadcrumbProps) {
           return (
             <li
               key={`${String(i)}-${entry.label}`}
-              style={{ display: 'flex', alignItems: 'center' }}
+              // margin:0 resets Starlight's markdown-content block margins that
+              // otherwise stretch the row and knock the crumbs out of alignment.
+              style={{ display: 'flex', alignItems: 'center', margin: 0 }}
             >
               {i > 0 && (
                 <span
@@ -205,6 +207,7 @@ function Breadcrumb({ path, onJump }: BreadcrumbProps) {
                     appearance: 'none',
                     background: 'transparent',
                     border: 'none',
+                    margin: 0,
                     padding: '0.15rem 0.35rem',
                     borderRadius: '0.25rem',
                     color: 'var(--sl-color-text-accent, inherit)',
