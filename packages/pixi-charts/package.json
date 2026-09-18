@@ -1,6 +1,6 @@
 {
   "name": "pixi-charts",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "A WebGL-rendered TypeScript charting library built on PixiJS and D3 submodules. Renders tens of thousands of points at 60fps and stays interactive at 100k+ where Canvas-based libraries stall.",
   "license": "MIT",
   "author": "Siraj Sharma",
@@ -16,10 +16,16 @@
     "charts",
     "charting",
     "visualization",
-    "pixi",
-    "pixijs",
+    "data-visualization",
+    "dataviz",
     "webgl",
+    "pixijs",
+    "pixi",
     "d3",
+    "scatter",
+    "heatmap",
+    "performance",
+    "streaming",
     "typescript"
   ],
   "type": "module",
@@ -36,8 +42,12 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20"
   },
