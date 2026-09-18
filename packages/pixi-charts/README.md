@@ -57,7 +57,8 @@ Under the hood: D3 does the math (scales, layouts, spatial indexing); PixiJS doe
 
 ## Links
 
-- **Repository, docs & API reference:** https://github.com/sirajsharma/pixi-charts
+- **Docs & API reference:** https://pixicharts.dev
+- **Repository:** https://github.com/sirajsharma/pixi-charts
 - **Issues:** https://github.com/sirajsharma/pixi-charts/issues
 
 ## License

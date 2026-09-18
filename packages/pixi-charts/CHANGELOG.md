@@ -1,5 +1,11 @@
 # pixi-charts
 
+## 0.1.1
+
+### Patch Changes
+
+- Point the package `homepage` at the deployed documentation site (https://pixicharts.dev) instead of the GitHub repo README, and update the README's docs link to match. Metadata only — no code or API change.
+
 ## 0.1.0
 
 ### Minor Changes
